@@ -6,6 +6,9 @@ name = "pypi"
 [packages]
 django = "*"
 psycopg2-binary = "*"
+django-ninja = "*"
+pyjwt = "*"
+pydantic = {extras = ["email"], version = "*"}
 
 [dev-packages]
 
