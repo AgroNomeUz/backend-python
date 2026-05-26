@@ -9,8 +9,9 @@ psycopg2-binary = "*"
 django-ninja = "*"
 pyjwt = "*"
 pydantic = {extras = ["email"], version = "*"}
+jwt = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.11"
+python_version = "3.14"
