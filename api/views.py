@@ -43,9 +43,9 @@ async def _issue_tokens(user: User) -> dict:
             "name": org_obj.name,
             "address": org_obj.address,
             "region": {
-                "id": org_obj.region_id,
-                "name": org_obj.region.name,
-                "code": org_obj.region.code,
+                "id": org_obj.region_id or 0,
+                "name": org_obj.region.name if org_obj.region else "",
+                "code": org_obj.region.code if org_obj.region else None,
             },
             "tax_number": org_obj.tax_number,
             "phone": org_obj.phone,
