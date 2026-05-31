@@ -1,11 +1,12 @@
 import jwt
 from asgiref.sync import sync_to_async
 from django.contrib.auth import aauthenticate
+from django.db import transaction
 from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
-from users.models import User
+from users.models import Organization, User
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
     REFRESH_TOKEN_LIFETIME,
@@ -22,9 +23,6 @@ api = NinjaAPI(title="Agro API", version="1.0.0", auth=JWTBearer())
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-_create_user = sync_to_async(User.objects.create_user)
-
-
 async def _issue_tokens(user: User) -> dict:
     access = create_access_token(user.id)
     refresh = create_refresh_token(user.id)
@@ -33,6 +31,26 @@ async def _issue_tokens(user: User) -> dict:
         token=refresh,
         expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
     )
+    org = None
+    if user.organization_id:
+        org_obj = await (
+            Organization.objects
+            .select_related("region")
+            .aget(pk=user.organization_id)
+        )
+        org = {
+            "id": org_obj.id,
+            "name": org_obj.name,
+            "address": org_obj.address,
+            "region": {
+                "id": org_obj.region_id or 0,
+                "name": org_obj.region.name if org_obj.region else "",
+                "code": org_obj.region.code if org_obj.region else None,
+            },
+            "tax_number": org_obj.tax_number,
+            "phone": org_obj.phone,
+            "email": org_obj.email,
+        }
     return {
         "access_token": access,
         "refresh_token": refresh,
@@ -44,8 +62,33 @@ async def _issue_tokens(user: User) -> dict:
             "email": user.email,
             "first_name": user.first_name,
             "last_name": user.last_name,
+            "organization": org,
         },
     }
+
+
+def _create_user_and_org(data: SignUpIn) -> User:
+    """
+    Atomically creates a User and a blank default Organization they own.
+    Organization fields (name, region, address, …) are filled in later.
+    Runs inside sync_to_async so it can use Django ORM transactions.
+    """
+    with transaction.atomic():
+        user = User.objects.create_user(
+            username=data.username,
+            email=data.email,
+            password=data.password,
+            first_name=data.first_name,
+            last_name=data.last_name,
+        )
+        org = Organization.objects.create(owner=user)
+        user.organization = org
+        user.save(update_fields=["organization"])
+    return user
+
+
+_create_user_and_org_async = sync_to_async(_create_user_and_org)
+
 
 
 # ── auth endpoints ────────────────────────────────────────────────────────────
@@ -57,13 +100,7 @@ async def signup(request, data: SignUpIn):
     if await User.objects.filter(email=data.email).aexists():
         raise HttpError(400, "Email already registered")
 
-    user = await _create_user(
-        username=data.username,
-        email=data.email,
-        password=data.password,
-        first_name=data.first_name,
-        last_name=data.last_name,
-    )
+    user = await _create_user_and_org_async(data)
     return await _issue_tokens(user)
 
 
