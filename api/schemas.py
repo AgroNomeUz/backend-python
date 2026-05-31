@@ -7,7 +7,7 @@ from pydantic import EmailStr
 class RegionOut(Schema):
     id: int
     name: str
-    code: str
+    code: str | None
 
 
 # ── Organization ──────────────────────────────────────────────────────────────

@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-05-31 — feature/users-organization-signup (bug fixes, committed by user)
+
+### Summary
+Nullable-region serialization bugs introduced when `Organization.region` was made optional.
+
+### What was fixed
+- **`api/schemas.py` — `RegionOut.code`**: changed type from `str` to `str | None` so Pydantic/Ninja correctly serializes a region with no code (or a null region placeholder).
+- **`api/views.py` — `_issue_tokens` region dict**: added null-guards for the case where `org.region` is `None` (newly nullable after simplification):
+  - `"id"` → `org_obj.region_id or 0` (avoids `None` where an int is expected)
+  - `"name"` → `org_obj.region.name if org_obj.region else ""`
+  - `"code"` → `org_obj.region.code if org_obj.region else None`
+
+### Root cause
+Making `Organization.region` nullable (migration 0003) meant the serialization path in `_issue_tokens` could receive `None` for the region FK and its fields, crashing with attribute errors. The schema also expected a non-nullable `str` for `code`.
+
+### Files changed
+- `api/schemas.py`
+- `api/views.py`
+
+---
+
 ## 2026-05-31 — feature/users-organization-signup
 
 ### Summary
@@ -44,21 +65,15 @@ from users.models import Region
 Region.objects.get_or_create(name='Tashkent', code='TSH')
 "
 
-# 4. POST /api/auth/signup
+# 4. POST /api/auth/signup (only credentials required; org created empty)
 curl -X POST http://localhost:8000/api/auth/signup \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "farmowner",
     "email": "farm@example.com",
-    "password": "s3cr3t",
-    "first_name": "Ali",
-    "last_name": "Karimov",
-    "organization_name": "GreenField LLC",
-    "region_code": "TSH",
-    "organization_address": "123 Field Road",
-    "tax_number": "123456789"
+    "password": "s3cr3t"
   }'
-# Expected: 200 with access_token, refresh_token, user (with nested organization)
+# Expected: 200 with access_token, refresh_token, user (with nested empty organization)
 
 # 5. Re-signup with same username → 400 "Username already taken"
 ```

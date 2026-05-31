@@ -9,7 +9,6 @@ psycopg2-binary = "*"
 django-ninja = "*"
 pyjwt = "*"
 pydantic = {extras = ["email"], version = "*"}
-jwt = "*"
 
 [dev-packages]
 
