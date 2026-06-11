@@ -2,6 +2,57 @@
 
 ---
 
+## 2026-06-11 — equipment
+
+### Summary
+Designed and implemented the full MVP model layer for the agricultural equipment rental platform. No migrations generated — models are ready for review first.
+
+### What was done
+- **Rewrote `equipment/models.py`** — complete MVP schema (21 models across 9 domains):
+  - Catalog: `Manufacturer`, `EquipmentCategory`, `EquipmentModel`, `EquipmentModelCompatibility`
+  - Assets: `Asset` (physical machine with PostGIS `PointField` for location)
+  - Farms: `Farm` (PointField), `Field` (MultiPolygonField), `CropSeason`
+  - Pricing: `AvailabilityPeriod`, `PricingRule`, `DepositRule`
+  - Bookings: `Booking` (with `ALLOWED_TRANSITIONS` map), `BookingItem`, `BookingStatusHistory`
+  - Work: `WorkOrder`, `WorkSession` (MultiLineStringField for GPS track)
+  - Maintenance: `MaintenanceRecord`, `Inspection`, `FaultReport`
+  - Documents: `Document` (generic FK via ContentType)
+  - Events/Ext: `AssetEvent`, `ExternalReference` (generic FK adapter table for ADAPT/ISOBUS/JD/CLAAS)
+- **Updated `agro/settings.py`**:
+  - Added `django.contrib.gis` to INSTALLED_APPS
+  - Added `equipment.apps.EquipmentConfig` to INSTALLED_APPS
+  - Changed DB engine to `django.contrib.gis.db.backends.postgis`
+- **Wrote `equipment/admin.py`** — all 21 models registered with GISModelAdmin where needed
+
+### Files changed
+- `equipment/models.py` *(full rewrite)*
+- `equipment/admin.py` *(full rewrite)*
+- `agro/settings.py` *(added gis + equipment app, changed DB engine)*
+
+### How to verify (after review and migration approval)
+```bash
+# 1. Install PostGIS in docker (already in docker-compose if using postgis image)
+# 2. Generate migrations
+python manage.py makemigrations equipment
+
+# 3. Check for errors
+python manage.py check
+
+# 4. Apply
+python manage.py migrate
+
+# 5. Smoke-test via shell
+python manage.py shell -c "
+from equipment.models import Manufacturer, EquipmentCategory, EquipmentModel
+m = Manufacturer.objects.create(name='John Deere', country='US')
+cat = EquipmentCategory.objects.create(name='Tractor', slug='tractor', is_self_propelled=True)
+em = EquipmentModel.objects.create(manufacturer=m, category=cat, name='8R 410', engine_power_kw=302, is_self_propelled=True)
+print(em)
+"
+```
+
+---
+
 ## 2026-05-31 — feature/users-organization-signup (bug fixes, committed by user)
 
 ### Summary
