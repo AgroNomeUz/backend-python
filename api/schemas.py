@@ -1,11 +1,16 @@
+from uuid import UUID
+
 from ninja import Schema
 from pydantic import EmailStr
+
+# All `id` fields carry the model's `public_id` UUID — integer PKs never
+# leave the backend.
 
 
 # ── Region ────────────────────────────────────────────────────────────────────
 
 class RegionOut(Schema):
-    id: int
+    id: UUID
     name: str
     code: str | None
 
@@ -13,10 +18,10 @@ class RegionOut(Schema):
 # ── Organization ──────────────────────────────────────────────────────────────
 
 class OrganizationOut(Schema):
-    id: int
+    id: UUID
     name: str
     address: str
-    region: RegionOut
+    region: RegionOut | None = None
     tax_number: str
     phone: str
     email: str
@@ -25,7 +30,7 @@ class OrganizationOut(Schema):
 # ── User ──────────────────────────────────────────────────────────────────────
 
 class UserOut(Schema):
-    id: int
+    id: UUID
     username: str
     email: str
     first_name: str

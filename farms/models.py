@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from core.models import PublicIdModel
 from users.models import Organization
 from django.contrib.gis.db import models as gis_models
 
@@ -10,7 +11,7 @@ from django.contrib.gis.db import models as gis_models
 # =============================================================================
 
 
-class Farm(models.Model):
+class Farm(PublicIdModel):
     """A farm owned or managed by a customer user."""
 
     owner = models.ForeignKey(
@@ -41,7 +42,7 @@ class Farm(models.Model):
         return self.name
 
 
-class Field(models.Model):
+class Field(PublicIdModel):
     """A single arable parcel belonging to a farm."""
 
     farm = models.ForeignKey(Farm, on_delete=models.CASCADE, related_name="fields")
@@ -74,7 +75,7 @@ class Field(models.Model):
             raise ValidationError({"area_ha": "Field area must be positive."})
 
 
-class CropSeason(models.Model):
+class CropSeason(PublicIdModel):
     """Crop planted on a field during a season year."""
 
     field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name="crop_seasons")

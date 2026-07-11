@@ -23,6 +23,7 @@ from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from core.models import PublicIdModel
 from farms.models import Farm, Field
 from users.models import Organization
 
@@ -31,7 +32,7 @@ from users.models import Organization
 # =============================================================================
 
 
-class Manufacturer(models.Model):
+class Manufacturer(PublicIdModel):
     """Equipment brand: John Deere, CLAAS, Case IH, New Holland, etc."""
 
     name = models.CharField(max_length=100, unique=True)
@@ -45,7 +46,7 @@ class Manufacturer(models.Model):
         return self.name
 
 
-class EquipmentCategory(models.Model):
+class EquipmentCategory(PublicIdModel):
     """
     Hierarchical category tree (self-referencing).
     Top-level nodes: "Vehicle", "Implement".
@@ -74,7 +75,7 @@ class EquipmentCategory(models.Model):
         return self.name
 
 
-class EquipmentModel(models.Model):
+class EquipmentModel(PublicIdModel):
     """
     Make/model specification — 'John Deere 8R 410'.
     Describes what a class of machines looks like; not a physical unit.
@@ -152,7 +153,7 @@ class EquipmentModel(models.Model):
         return f"{self.manufacturer.name} {self.name}"
 
 
-class EquipmentModelCompatibility(models.Model):
+class EquipmentModelCompatibility(PublicIdModel):
     """
     Coupling requirements between an implement and a power unit.
 
@@ -231,7 +232,7 @@ class EquipmentModelCompatibility(models.Model):
 # =============================================================================
 
 
-class Asset(models.Model):
+class Asset(PublicIdModel):
     """
     A real, physical machine or implement owned by an Organization.
 
@@ -338,7 +339,7 @@ class Asset(models.Model):
 # =============================================================================
 
 
-class AvailabilityPeriod(models.Model):
+class AvailabilityPeriod(PublicIdModel):
     """
     Explicit availability / block windows for an asset.
     Confirmed bookings create BLOCKED entries (via the service layer).
@@ -376,7 +377,7 @@ class AvailabilityPeriod(models.Model):
             raise ValidationError({"ends_at": "ends_at must be after starts_at."})
 
 
-class PricingRule(models.Model):
+class PricingRule(PublicIdModel):
     """
     Flexible pricing attached to an asset or an equipment model.
     Asset-level rules take precedence over model-level rules.
@@ -442,7 +443,7 @@ class PricingRule(models.Model):
             )
 
 
-class DepositRule(models.Model):
+class DepositRule(PublicIdModel):
     """Deposit amount required when booking an asset."""
 
     asset = models.ForeignKey(
@@ -469,7 +470,7 @@ class DepositRule(models.Model):
 # =============================================================================
 
 
-class Booking(models.Model):
+class Booking(PublicIdModel):
     """
     The commercial rental agreement between a customer and an organization.
     Operational detail lives in WorkOrder (child records).
@@ -560,7 +561,7 @@ class Booking(models.Model):
             raise ValidationError({"end_at": "end_at must be after start_at."})
 
 
-class BookingItem(models.Model):
+class BookingItem(PublicIdModel):
     """One asset line within a booking."""
 
     class PricingUnit(models.TextChoices):
@@ -603,7 +604,7 @@ class BookingItem(models.Model):
         return f"{self.asset} × {self.quantity} {self.pricing_unit}"
 
 
-class BookingStatusHistory(models.Model):
+class BookingStatusHistory(PublicIdModel):
     """Immutable audit log — every booking status transition is recorded here."""
 
     booking = models.ForeignKey(
@@ -635,7 +636,7 @@ class BookingStatusHistory(models.Model):
 # =============================================================================
 
 
-class WorkOrder(models.Model):
+class WorkOrder(PublicIdModel):
     """
     Operational task derived from a booking.
     Booking = 'rent this tractor for 3 days'.
@@ -715,7 +716,7 @@ class WorkOrder(models.Model):
             raise ValidationError({"planned_area_ha": "Planned area must be positive."})
 
 
-class WorkSession(models.Model):
+class WorkSession(PublicIdModel):
     """
     A single continuous operating period by one asset + operator on a work order.
     Tracks GPS, hours, area covered, fuel.
@@ -815,7 +816,7 @@ class WorkSession(models.Model):
 # =============================================================================
 
 
-class MaintenanceRecord(models.Model):
+class MaintenanceRecord(PublicIdModel):
     """Service / repair log entry for an asset."""
 
     class MaintenanceType(models.TextChoices):
@@ -870,7 +871,7 @@ class MaintenanceRecord(models.Model):
         )
 
 
-class Inspection(models.Model):
+class Inspection(PublicIdModel):
     """Pre-rental, post-rental, or routine equipment inspection."""
 
     class InspectionType(models.TextChoices):
@@ -929,7 +930,7 @@ class Inspection(models.Model):
         )
 
 
-class FaultReport(models.Model):
+class FaultReport(PublicIdModel):
     """Equipment fault or damage report logged by an operator or inspector."""
 
     class Severity(models.TextChoices):
@@ -978,7 +979,7 @@ class FaultReport(models.Model):
 # =============================================================================
 
 
-class Document(models.Model):
+class Document(PublicIdModel):
     """
     File attachment that can be linked to any model via generic FK.
     Used for contracts, registrations, insurance, inspection photos,
@@ -1038,7 +1039,7 @@ class Document(models.Model):
 # =============================================================================
 
 
-class AssetEvent(models.Model):
+class AssetEvent(PublicIdModel):
     """
     Lightweight lifecycle event log for significant asset transitions.
     This is NOT for high-frequency GPS/sensor data — use a time-series
@@ -1092,7 +1093,7 @@ class AssetEvent(models.Model):
         return f"{self.asset} — {self.event_type} @ {self.occurred_at}"
 
 
-class ExternalReference(models.Model):
+class ExternalReference(PublicIdModel):
     """
     Maps any internal object to an ID in an external system.
 
