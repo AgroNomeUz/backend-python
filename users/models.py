@@ -2,8 +2,10 @@ from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
+from core.models import PublicIdModel
 
-class User(AbstractUser):
+
+class User(PublicIdModel, AbstractUser):
     """
     Custom user model. Extend here instead of the default Django user.
 
@@ -29,7 +31,7 @@ class User(AbstractUser):
         swappable = "AUTH_USER_MODEL"
 
 
-class Region(models.Model):
+class Region(PublicIdModel):
     """Geographic / administrative region used to locate organizations."""
 
     name = models.CharField(max_length=100)
@@ -44,7 +46,7 @@ class Region(models.Model):
         return f"{self.name} ({self.code})"
 
 
-class Organization(models.Model):
+class Organization(PublicIdModel):
     """
     A B2B legal entity (company, farm, cooperative, etc.).
 

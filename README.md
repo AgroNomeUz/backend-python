@@ -60,6 +60,11 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 
 ### Conventions
 
+- **Public IDs are UUIDs**: every domain model inherits `core.models.PublicIdModel`,
+  which adds a unique `public_id` UUID alongside the integer PK. The API only
+  ever exposes and accepts `public_id`; integer PKs never leave the backend
+  (they stay for cheap joins). Look up API-supplied ids with
+  `Model.objects.get(public_id=...)`.
 - One django-ninja **router per app**, mounted under a namespace
   (`/api/auth/…`, `/api/equipment/…`, `/api/market/…`) — the API is already
   shaped like service boundaries without the distributed-systems cost.

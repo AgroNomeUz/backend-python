@@ -17,20 +17,20 @@ def _decode(token: str) -> dict:
     return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
 
 
-def create_access_token(user_id: int) -> str:
+def create_access_token(user_public_id) -> str:
     now = datetime.now(timezone.utc)
     return _encode({
-        "user_id": user_id,
+        "user_id": str(user_public_id),
         "type": "access",
         "iat": now,
         "exp": now + ACCESS_TOKEN_LIFETIME,
     })
 
 
-def create_refresh_token(user_id: int) -> str:
+def create_refresh_token(user_public_id) -> str:
     now = datetime.now(timezone.utc)
     return _encode({
-        "user_id": user_id,
+        "user_id": str(user_public_id),
         "type": "refresh",
         "iat": now,
         "exp": now + REFRESH_TOKEN_LIFETIME,
@@ -56,6 +56,8 @@ class JWTBearer(HttpBearer):
         try:
             payload = decode_access_token(token)
             from users.models import User
-            return await User.objects.aget(id=payload["user_id"], is_active=True)
+            return await User.objects.aget(
+                public_id=payload["user_id"], is_active=True
+            )
         except Exception:
             return None

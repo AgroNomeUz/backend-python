@@ -168,3 +168,26 @@ curl -X POST http://localhost:8000/api/auth/signup \
   ```
   If the old postgres_data volume misbehaves with the new image (dev data
   only): `docker compose down -v` and re-run.
+
+## 2026-07-11 — equipment (public UUID ids)
+- **Summary**: Added `public_id` UUID (non-primary, unique) to every domain
+  model via a new abstract base `core.models.PublicIdModel`; integer PKs stay
+  internal. Applied to users (User, Region, Organization), farms (3 models)
+  and equipment (19 models). api.RefreshToken was deliberately skipped — it is
+  never addressed by id (the token string is the lookup key). Migrations are
+  hand-written in three phases (add nullable → backfill distinct UUIDs →
+  alter to unique) so they are safe on populated tables. API now exposes
+  UUIDs: schemas' `id` fields are UUID (OrganizationOut.region is now properly
+  nullable instead of the fake id-0 region), views pass `public_id`, and JWT
+  access/refresh tokens carry `str(user.public_id)` in the `user_id` claim
+  with lookup by `public_id` — existing dev tokens are invalidated.
+- **Files changed**: core/__init__.py, core/models.py (new), users/models.py,
+  farms/models.py, equipment/models.py, users/migrations/0004_public_id.py,
+  farms/migrations/0002_public_id.py, equipment/migrations/0003_public_id.py,
+  api/schemas.py, api/views.py, api/auth.py, README.md, SESSIONS.md
+- **How to verify**:
+  ```bash
+  docker compose run --rm web python manage.py migrate
+  # login again (old JWTs are invalid), then check /api/docs:
+  # signup/login responses must show uuid ids for user/organization/region
+  ```
