@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     # Local
     'users.apps.UsersConfig',
     'api.apps.ApiConfig',
+    'farms.apps.FarmsConfig',
     'equipment.apps.EquipmentConfig',
 ]
 
@@ -88,7 +89,7 @@ DATABASES = {
         "PASSWORD": os.environ.get("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST"),
         "PORT": os.environ.get("DB_PORT"),
-        "CONN_MAX_AGE": os.environ.get("DB_CONN_MAX_AGE"),
+        "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE") or 0),
     }
 }
 
