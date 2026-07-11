@@ -8,16 +8,13 @@ from .models import (
     Booking,
     BookingItem,
     BookingStatusHistory,
-    CropSeason,
     DepositRule,
     Document,
     EquipmentCategory,
     EquipmentModel,
     EquipmentModelCompatibility,
     ExternalReference,
-    Farm,
     FaultReport,
-    Field,
     Inspection,
     MaintenanceRecord,
     Manufacturer,
@@ -64,26 +61,6 @@ class AssetAdmin(GISModelAdmin):
     search_fields = ["serial_number", "vin_or_pin", "internal_inventory_number"]
 
 
-@admin.register(Farm)
-class FarmAdmin(GISModelAdmin):
-    list_display = ["name", "owner", "region"]
-    search_fields = ["name"]
-    list_filter = ["region"]
-
-
-@admin.register(Field)
-class FieldAdmin(GISModelAdmin):
-    list_display = ["__str__", "farm", "area_ha", "soil_type"]
-    list_filter = ["farm__region"]
-    search_fields = ["name", "farm__name"]
-
-
-@admin.register(CropSeason)
-class CropSeasonAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "crop_type", "season_year", "planting_date"]
-    list_filter = ["season_year", "crop_type"]
-
-
 @admin.register(AvailabilityPeriod)
 class AvailabilityPeriodAdmin(admin.ModelAdmin):
     list_display = ["asset", "period_type", "starts_at", "ends_at"]
@@ -118,11 +95,11 @@ class BookingStatusHistoryInline(admin.TabularInline):
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
     list_display = [
-        "__str__", "customer", "organization", "status",
+        "__str__", "customer_organization", "provider_organization", "status",
         "start_at", "end_at", "total_amount", "currency",
     ]
-    list_filter = ["status", "organization"]
-    search_fields = ["customer__username", "customer__email"]
+    list_filter = ["status", "provider_organization"]
+    search_fields = ["customer_organization__name"]
     inlines = [BookingItemInline, BookingStatusHistoryInline]
 
 

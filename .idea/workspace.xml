@@ -6,6 +6,13 @@
   <component name="ChangeListManager">
     <list default="true" id="007ab170-88c6-464a-9b98-044e50ff9c5c" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/Dockerfile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/SESSIONS.md" beforeDir="false" afterPath="$PROJECT_DIR$/SESSIONS.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agro/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/agro/settings.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/equipment/admin.py" beforeDir="false" afterPath="$PROJECT_DIR$/equipment/admin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/equipment/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/equipment/models.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -91,7 +98,9 @@
       <workItem from="1780214604221" duration="4829000" />
       <workItem from="1780286912984" duration="70000" />
       <workItem from="1780585667339" duration="605000" />
-      <workItem from="1780997422388" duration="3980000" />
+      <workItem from="1780997422388" duration="6285000" />
+      <workItem from="1782100857735" duration="764000" />
+      <workItem from="1783605035933" duration="9855000" />
     </task>
     <servers />
   </component>

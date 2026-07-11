@@ -128,3 +128,43 @@ curl -X POST http://localhost:8000/api/auth/signup \
 
 # 5. Re-signup with same username → 400 "Username already taken"
 ```
+
+## 2026-07-11 — equipment
+- **Summary**: Architecture discussion — decided to keep a modular monolith
+  (no microservices) with one Django app per bounded context. Confirmed
+  WorkOrder/WorkSession stay (operator services with per-hectare billing are
+  in MVP scope). Documented current + planned app layout (`farms/`,
+  `marketplace/`, `billing/`, `notifications/`, `telemetry/`) and service-layer
+  conventions in README.md; refreshed the feature roadmap. Also flagged (not
+  yet applied): `Booking.customer` should become `customer_organization` FK +
+  `created_by` user FK, since bookings are org-to-org.
+- **Files changed**: README.md, SESSIONS.md
+- **How to verify**: read README.md "App Layout" and "Feature Roadmap"
+  sections; no code/migration changes.
+
+## 2026-07-11 — equipment (migration readiness)
+- **Summary**: Prepared the first farms + equipment migration. Fixed four
+  blockers: (1) registered the new `farms` app in INSTALLED_APPS; (2) moved
+  Farm/Field/CropSeason admin classes from equipment/admin.py to
+  farms/admin.py (equipment/admin.py imported CropSeason which is no longer
+  importable from equipment.models — startup crash); (3) switched the
+  docker-compose db image from postgres:16 to postgis/postgis:16-3.5 (settings
+  use the postgis backend; plain postgres cannot CREATE EXTENSION postgis);
+  (4) fixed CONN_MAX_AGE — settings read DB_CONN_MAX_AGE but .env defines
+  CONN_MAX_AGE, and the value is now cast to int. Generated initial
+  migrations: farms/0001, equipment/0001 + 0002 (Django split the cross-app
+  FKs to farms into 0002 with an explicit dependency). `manage.py check`
+  passes.
+- **Files changed**: agro/settings.py, docker-compose.yml, equipment/admin.py,
+  farms/admin.py, farms/migrations/0001_initial.py,
+  equipment/migrations/0001_initial.py, equipment/migrations/0002_initial.py,
+  SESSIONS.md
+- **How to verify**:
+  ```bash
+  docker compose down          # db image changed — recreate the container
+  docker compose up --build -d
+  docker compose run --rm web python manage.py migrate
+  # expect: users, farms, equipment migrations apply cleanly
+  ```
+  If the old postgres_data volume misbehaves with the new image (dev data
+  only): `docker compose down -v` and re-run.
