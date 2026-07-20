@@ -191,3 +191,46 @@ curl -X POST http://localhost:8000/api/auth/signup \
   # login again (old JWTs are invalid), then check /api/docs:
   # signup/login responses must show uuid ids for user/organization/region
   ```
+
+## 2026-07-11 — equipment (hitch category on EquipmentModel)
+- **Summary**: Added `hitch_category` to EquipmentModel — the hitch a tractor
+  PROVIDES — so implement requirements (EquipmentModelCompatibility) can be
+  matched against tractors generically. Promoted HitchCategory from a nested
+  class on EquipmentModelCompatibility to module level, shared by both models
+  (same choice values, so no migration needed for the compatibility table).
+  Decision: tractor size class (small/midsize/large) is NOT stored — it is
+  derived from engine_power_kw power bands at the query/API layer.
+- **Files changed**: equipment/models.py, equipment/admin.py,
+  equipment/migrations/0004_equipmentmodel_hitch_category.py, SESSIONS.md
+- **How to verify**:
+  ```bash
+  docker compose run --rm web python manage.py migrate
+  # admin → Equipment models: hitch_category column + filter present
+  ```
+
+## 2026-07-20 — equipment (catalog + asset API, activity log)
+- **Summary**: Exposed the first org-facing write API. Catalog endpoints
+  (manufacturers, category tree, equipment models) are read-only shared
+  reference data and feed the frontend's "pick your machine" flow; the model
+  list supports search, category (slug, includes subcategories), manufacturer,
+  power range, `size_class`, hitch and production-year filters. Assets are
+  CRUD, always scoped to `request.auth.organization` — a foreign asset id 404s
+  rather than leaking existence. Every asset write records a `core.ActivityLog`
+  row (actor, field-level diff, request ip/UA/path); a status-only edit is
+  logged as `status_changed`, and the DELETE row is written before the delete
+  so history outlives the object. Activity is readable per-asset and org-wide.
+  Assets referenced by bookings/work sessions return 409 on delete (retire
+  instead). Endpoints are sync — django-ninja bridges the async JWTBearer.
+- **Files changed**: equipment/views.py, api/views.py (router wiring),
+  core/migrations/0001_initial.py (new, ActivityLog), SESSIONS.md
+- **How to verify**:
+  ```bash
+  docker compose exec web python manage.py migrate
+  # /api/v1/docs → Catalog, Assets, Activity sections (all need a bearer token)
+  # POST /api/v1/auth/login, then:
+  #   GET  /api/v1/catalog/categories
+  #   GET  /api/v1/catalog/equipment-models?category=tractor&size_class=large
+  #   POST /api/v1/assets  {"equipment_model_id": "<uuid>", "serial_number": "SN-1"}
+  #   PATCH/DELETE /api/v1/assets/{id}
+  #   GET  /api/v1/assets/{id}/activity   and   GET /api/v1/activity
+  ```

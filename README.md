@@ -38,6 +38,7 @@ into separate services mechanical, if scale ever demands it.
 
 ```
 agro/           Django project config (settings, root urls, wsgi/asgi)
+core/           Shared bases: PublicIdModel (UUID public ids), ActivityLog audit
 users/          Identity & tenancy: custom User, Organization, Region
 api/            HTTP layer: django-ninja routers, JWT auth, Pydantic schemas
 equipment/      Equipment domain: catalog (manufacturers, models, compatibility),
@@ -83,7 +84,9 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 - [x] Organization & Region models (B2B tenant structure)
 - [x] Signup creates owner + organization in one atomic step
 - [x] Equipment domain models (catalog, assets, pricing, bookings, work orders)
-- [ ] Equipment listing API (trucks, tractors, harvesters, …)
+- [x] Equipment catalog API (models picker: manufacturers, categories, specs)
+- [x] Org asset registry API (add/edit/remove machines, org-scoped)
+- [x] Activity log — who changed what inside an organization
 - [ ] Rental requests & booking flow
 - [ ] Work orders: operator services billed per hectare / shift / operation
 - [ ] Staff management (invite users to an organization)
@@ -132,6 +135,46 @@ python manage.py createsuperuser
 | `/api/auth/signup`          | POST   | None  | Register user + create organization|
 | `/api/auth/login`           | POST   | None  | Login (username or email)          |
 | `/api/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
+
+### Catalog — shared reference data, read-only
+
+| Endpoint                                | Method | Description                              |
+|-----------------------------------------|--------|------------------------------------------|
+| `/api/v1/catalog/manufacturers`         | GET    | Brands (`?search=`)                      |
+| `/api/v1/catalog/categories`            | GET    | Category tree, children inlined          |
+| `/api/v1/catalog/categories/{slug}`     | GET    | One category                             |
+| `/api/v1/catalog/equipment-models`      | GET    | Models the user picks from (see filters) |
+| `/api/v1/catalog/equipment-models/{id}` | GET    | One model with full specs                |
+
+Model filters: `search`, `manufacturer_id`, `category` (slug — a top-level slug
+also matches its subcategories), `is_self_propelled`, `hitch_category`,
+`min_power_kw`, `max_power_kw`, `size_class` (`small`/`midsize`/`large`),
+`year`. Catalog rows are populated by admins, never by API clients.
+
+### Assets — owned by the caller's organization
+
+| Endpoint                        | Method | Description                               |
+|---------------------------------|--------|-------------------------------------------|
+| `/api/v1/assets`                | GET    | The org's machines (`?search=`, `?category=`, `?operational_status=`, `?ownership_status=`, `?bookable=`) |
+| `/api/v1/assets`                | POST   | Register a machine into the org           |
+| `/api/v1/assets/{id}`           | GET    | One asset                                 |
+| `/api/v1/assets/{id}`           | PATCH  | Partial update (only keys sent are applied)|
+| `/api/v1/assets/{id}`           | DELETE | Remove; 409 if booked — retire instead    |
+| `/api/v1/assets/{id}/activity`  | GET    | That asset's full history                 |
+| `/api/v1/activity`              | GET    | Org-wide change history (`?action=`, `?target_type=`) |
+
+Assets are scoped to `request.auth.organization`: another org's id returns
+**404**, not 403, so ids can't be probed. All list endpoints are paginated
+(`?limit=` / `?offset=`, returning `{"items": [...], "count": N}`).
+
+### Audit trail
+
+Every write to org-owned data appends a `core.ActivityLog` row — actor, action,
+generic-FK target, `target_repr` snapshot, a field-level `changes` diff, and
+request context (ip, user agent, method, path). Rows are append-only and
+survive deletion of their target. Status-only edits are recorded as
+`status_changed` rather than `updated`. New write endpoints must log here too;
+use `ActivityLog.record()` with the helpers in `core/audit.py`.
 
 Full interactive docs at `/api/docs` (Swagger UI via django-ninja).
 
