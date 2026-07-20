@@ -75,6 +75,16 @@ class EquipmentCategory(PublicIdModel):
         return self.name
 
 
+class HitchCategory(models.TextChoices):
+    """Three-point hitch categories (shared by models and compatibility rules)."""
+
+    CAT_1 = "cat1", "Category 1"
+    CAT_2 = "cat2", "Category 2"
+    CAT_3 = "cat3", "Category 3"
+    CAT_4 = "cat4", "Category 4"
+    DRAWBAR = "drawbar", "Drawbar"
+
+
 class EquipmentModel(PublicIdModel):
     """
     Make/model specification — 'John Deere 8R 410'.
@@ -126,6 +136,15 @@ class EquipmentModel(PublicIdModel):
         max_length=10, choices=FuelType.choices, default=FuelType.DIESEL
     )
     is_self_propelled = models.BooleanField(default=False)
+    hitch_category = models.CharField(
+        max_length=10,
+        choices=HitchCategory.choices,
+        blank=True,
+        help_text=(
+            "Hitch this machine PROVIDES (tractors). Blank for implements — "
+            "what an implement REQUIRES lives in EquipmentModelCompatibility."
+        ),
+    )
 
     # Category-specific, display-only attributes
     specifications = models.JSONField(
@@ -171,13 +190,6 @@ class EquipmentModelCompatibility(PublicIdModel):
         TRACTOR_IMPLEMENT = "tractor_implement", "Tractor → Implement"
         COMBINE_HEADER = "combine_header", "Combine → Header"
         OTHER = "other", "Other"
-
-    class HitchCategory(models.TextChoices):
-        CAT_1 = "cat1", "Category 1"
-        CAT_2 = "cat2", "Category 2"
-        CAT_3 = "cat3", "Category 3"
-        CAT_4 = "cat4", "Category 4"
-        DRAWBAR = "drawbar", "Drawbar"
 
     primary_model = models.ForeignKey(
         EquipmentModel,

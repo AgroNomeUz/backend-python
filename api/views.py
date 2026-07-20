@@ -6,6 +6,7 @@ from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
+from equipment.views import activity_router, assets_router, catalog_router
 from users.models import Organization, User
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
@@ -19,6 +20,10 @@ from .models import RefreshToken
 from .schemas import AuthOut, LoginIn, RefreshIn, SignUpIn, TokenOut
 
 api = NinjaAPI(title="Agro API", version="1.0.0", auth=JWTBearer())
+
+api.add_router("/catalog", catalog_router)
+api.add_router("/assets", assets_router)
+api.add_router("/activity", activity_router)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

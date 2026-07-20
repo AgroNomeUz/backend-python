@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'django.contrib.gis',
 
     # Local
+    'core.apps.CoreConfig',
     'users.apps.UsersConfig',
     'api.apps.ApiConfig',
     'farms.apps.FarmsConfig',

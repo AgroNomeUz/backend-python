@@ -45,8 +45,8 @@ class EquipmentModelCompatibilityInline(admin.TabularInline):
 
 @admin.register(EquipmentModel)
 class EquipmentModelAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "category", "engine_power_kw", "is_self_propelled", "fuel_type"]
-    list_filter = ["category", "is_self_propelled", "fuel_type", "manufacturer"]
+    list_display = ["__str__", "category", "engine_power_kw", "is_self_propelled", "fuel_type", "hitch_category"]
+    list_filter = ["category", "is_self_propelled", "fuel_type", "hitch_category", "manufacturer"]
     search_fields = ["name", "manufacturer__name"]
     inlines = [EquipmentModelCompatibilityInline]
 
