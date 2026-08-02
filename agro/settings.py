@@ -38,10 +38,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.gis',
 
     # Local
+    'core.apps.CoreConfig',
     'users.apps.UsersConfig',
     'api.apps.ApiConfig',
+    'farms.apps.FarmsConfig',
+    'equipment.apps.EquipmentConfig',
 ]
 
 MIDDLEWARE = [
@@ -80,13 +84,13 @@ WSGI_APPLICATION = 'agro.wsgi.application'
 
 DATABASES = {
     'default': {
-        "ENGINE": "django.db.backends.postgresql",
+        "ENGINE": "django.contrib.gis.db.backends.postgis",
         "NAME": os.environ.get("DB_NAME"),
         "USER": os.environ.get("DB_USER"),
         "PASSWORD": os.environ.get("DB_PASSWORD"),
         "HOST": os.environ.get("DB_HOST"),
         "PORT": os.environ.get("DB_PORT"),
-        "CONN_MAX_AGE": os.environ.get("DB_CONN_MAX_AGE"),
+        "CONN_MAX_AGE": int(os.environ.get("CONN_MAX_AGE") or 0),
     }
 }
 

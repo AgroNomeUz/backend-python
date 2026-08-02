@@ -6,6 +6,7 @@ from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
+from equipment.views import activity_router, assets_router, catalog_router
 from users.models import Organization, User
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
@@ -20,12 +21,16 @@ from .schemas import AuthOut, LoginIn, RefreshIn, SignUpIn, TokenOut
 
 api = NinjaAPI(title="Agro API", version="1.0.0", auth=JWTBearer())
 
+api.add_router("/catalog", catalog_router)
+api.add_router("/assets", assets_router)
+api.add_router("/activity", activity_router)
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 async def _issue_tokens(user: User) -> dict:
-    access = create_access_token(user.id)
-    refresh = create_refresh_token(user.id)
+    access = create_access_token(user.public_id)
+    refresh = create_refresh_token(user.public_id)
     await RefreshToken.objects.acreate(
         user=user,
         token=refresh,
@@ -38,15 +43,18 @@ async def _issue_tokens(user: User) -> dict:
             .select_related("region")
             .aget(pk=user.organization_id)
         )
+        region = None
+        if org_obj.region:
+            region = {
+                "id": org_obj.region.public_id,
+                "name": org_obj.region.name,
+                "code": org_obj.region.code,
+            }
         org = {
-            "id": org_obj.id,
+            "id": org_obj.public_id,
             "name": org_obj.name,
             "address": org_obj.address,
-            "region": {
-                "id": org_obj.region_id or 0,
-                "name": org_obj.region.name if org_obj.region else "",
-                "code": org_obj.region.code if org_obj.region else None,
-            },
+            "region": region,
             "tax_number": org_obj.tax_number,
             "phone": org_obj.phone,
             "email": org_obj.email,
@@ -57,7 +65,7 @@ async def _issue_tokens(user: User) -> dict:
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
         "user": {
-            "id": user.id,
+            "id": user.public_id,
             "username": user.username,
             "email": user.email,
             "first_name": user.first_name,
@@ -150,8 +158,8 @@ async def token_refresh(request, data: RefreshIn):
     await stored.asave(update_fields=["is_revoked"])
 
     user = stored.user
-    access = create_access_token(user.id)
-    refresh = create_refresh_token(user.id)
+    access = create_access_token(user.public_id)
+    refresh = create_refresh_token(user.public_id)
     await RefreshToken.objects.acreate(
         user=user,
         token=refresh,
