@@ -16,12 +16,14 @@ Domain split:
 Internal units: kW, ha, mm, kg, L, km, UTC, WGS84 (SRID 4326).
 """
 
+from decimal import ROUND_HALF_UP, Decimal
+
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.gis.db import models as gis_models
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 from core.models import PublicIdModel
 from farms.models import Farm, Field
@@ -344,7 +346,8 @@ class Asset(PublicIdModel):
 
     @property
     def is_bookable(self) -> bool:
-        return self.operational_status == self.OperationalStatus.AVAILABLE
+        """Derived from NON_BOOKABLE_STATUSES so the two never diverge."""
+        return self.operational_status not in self.NON_BOOKABLE_STATUSES
 
 # =============================================================================
 # 4. PRICING & AVAILABILITY
@@ -443,6 +446,18 @@ class PricingRule(PublicIdModel):
             models.Index(fields=["asset", "pricing_unit"]),
             models.Index(fields=["equipment_model", "pricing_unit"]),
         ]
+        constraints = [
+            # Enforced in the database as well, so a plain objects.create()
+            # cannot insert an orphaned rule that targets nothing.
+            models.CheckConstraint(
+                condition=models.Q(asset__isnull=False)
+                | models.Q(equipment_model__isnull=False),
+                name="pricingrule_has_target",
+                violation_error_message=(
+                    "A pricing rule must target either an asset or an equipment model."
+                ),
+            ),
+        ]
 
     def __str__(self) -> str:
         target = self.asset or self.equipment_model or "org-wide"
@@ -498,7 +513,8 @@ class Booking(PublicIdModel):
         COMPLETED = "completed", "Completed"
         DISPUTED = "disputed", "Disputed"
 
-    # Enforced in the service/view layer, not at DB level
+    # Enforced by the model itself: `clean()` validates it, `save()` rejects an
+    # illegal change, and `transition_to()` is the helper callers should use.
     ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         Status.DRAFT: {Status.REQUESTED, Status.CANCELLED},
         Status.REQUESTED: {Status.CONFIRMED, Status.REJECTED, Status.CANCELLED},
@@ -568,9 +584,106 @@ class Booking(PublicIdModel):
             f"({self.start_at.date()}–{self.end_at.date()})"
         )
 
+    # ---- status transitions -------------------------------------------------
+
+    #: Statuses a brand-new booking may be created in.
+    INITIAL_STATUSES: frozenset[str] = frozenset({Status.DRAFT, Status.REQUESTED})
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        """Remember the persisted status so save() can validate the change."""
+        instance = super().from_db(db, field_names, values)
+        instance._loaded_status = (
+            instance.status if "status" in field_names else models.DEFERRED
+        )
+        return instance
+
+    @classmethod
+    def can_transition(cls, from_status: str, to_status: str) -> bool:
+        """True if `from_status` → `to_status` is a legal move (no-ops allowed)."""
+        if from_status == to_status:
+            return True
+        return to_status in cls.ALLOWED_TRANSITIONS.get(from_status, set())
+
+    def _validate_status_transition(self) -> None:
+        previous = getattr(self, "_loaded_status", None)
+        if previous is models.DEFERRED:
+            # `status` was deferred on load; there is nothing to compare against.
+            return
+        if previous is None:
+            # Unsaved instance — only the documented entry points are valid.
+            if self.status not in self.INITIAL_STATUSES:
+                raise ValidationError(
+                    {
+                        "status": (
+                            f"A new booking cannot start in '{self.status}'. "
+                            f"Allowed: {sorted(self.INITIAL_STATUSES)}."
+                        )
+                    }
+                )
+            return
+        if not self.can_transition(previous, self.status):
+            allowed = sorted(self.ALLOWED_TRANSITIONS.get(previous, set()))
+            raise ValidationError(
+                {
+                    "status": (
+                        f"Illegal status transition '{previous}' → '{self.status}'. "
+                        f"Allowed from '{previous}': {allowed or 'none (terminal)'}."
+                    )
+                }
+            )
+
     def clean(self) -> None:
         if self.start_at and self.end_at and self.end_at <= self.start_at:
             raise ValidationError({"end_at": "end_at must be after start_at."})
+        self._validate_status_transition()
+
+    def save(self, *args, **kwargs):
+        """
+        Guard the status machine on every write, not just on full_clean(), so
+        `booking.status = "completed"; booking.save()` cannot skip the rules.
+        """
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or "status" in set(update_fields):
+            self._validate_status_transition()
+        super().save(*args, **kwargs)
+        self._loaded_status = self.status
+
+    def transition_to(
+        self,
+        new_status: str,
+        *,
+        changed_by=None,
+        notes: str = "",
+    ) -> "BookingStatusHistory":
+        """
+        Central entry point for status changes: validates the move, persists it
+        and appends the audit row. Callers should use this instead of assigning
+        `status` by hand.
+        """
+        previous = getattr(self, "_loaded_status", self.status)
+        if previous is models.DEFERRED:
+            previous = type(self).objects.values_list("status", flat=True).get(pk=self.pk)
+        if not self.can_transition(previous, new_status):
+            allowed = sorted(self.ALLOWED_TRANSITIONS.get(previous, set()))
+            raise ValidationError(
+                {
+                    "status": (
+                        f"Illegal status transition '{previous}' → '{new_status}'. "
+                        f"Allowed from '{previous}': {allowed or 'none (terminal)'}."
+                    )
+                }
+            )
+        with transaction.atomic():
+            self.status = new_status
+            self.save(update_fields=["status", "updated_at"])
+            return BookingStatusHistory.objects.create(
+                booking=self,
+                from_status=previous,
+                to_status=new_status,
+                changed_by=changed_by,
+                notes=notes,
+            )
 
 
 class BookingItem(PublicIdModel):
@@ -609,8 +722,14 @@ class BookingItem(PublicIdModel):
     notes = models.TextField(blank=True)
 
     @property
-    def line_total(self) -> float:
-        return float(self.unit_price * self.quantity)
+    def line_total(self) -> Decimal:
+        """
+        Money — stays Decimal end to end. Rounded to the same 2 places the
+        monetary columns use, so summing lines matches Booking.subtotal exactly.
+        """
+        return (self.unit_price * self.quantity).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
 
     def __str__(self) -> str:
         return f"{self.asset} × {self.quantity} {self.pricing_unit}"
