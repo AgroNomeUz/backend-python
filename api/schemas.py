@@ -35,6 +35,13 @@ class UserOut(Schema):
     email: str
     first_name: str
     last_name: str
+    # Effective permissions inside `organization` — an owner reads back the
+    # full set. Re-read from `/members/me`; an admin can change these while
+    # the token is still valid.
+    is_owner: bool = False
+    permissions: list[str] = []
+    # True until the user replaces the one-time password they were issued.
+    must_change_password: bool = False
     organization: OrganizationOut | None = None
 
 
@@ -56,6 +63,11 @@ class LoginIn(Schema):
 
 class RefreshIn(Schema):
     refresh_token: str
+
+
+class PasswordChangeIn(Schema):
+    current_password: str
+    new_password: str
 
 
 class TokenOut(Schema):
