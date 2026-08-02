@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-08-02 — fix/model-invariants (branched off `equipment`)
+
+### Summary
+Fixed 5 model-layer review findings: invariants that were documented but not enforced,
+and a float leak in money math.
+
+### What was fixed
+- **`Asset.is_bookable`** — now derived from `NON_BOOKABLE_STATUSES`
+  (`status not in NON_BOOKABLE_STATUSES`) instead of duplicating the inverse
+  (`== AVAILABLE`), so adding a new blocking status only needs one edit.
+- **`BookingItem.line_total`** — returns `Decimal` (quantized to 2 places,
+  `ROUND_HALF_UP`) instead of `float(...)`; no more binary rounding drift when
+  lines are aggregated into `Booking.subtotal`.
+- **`PricingRule`** — added DB-level `CheckConstraint` `pricingrule_has_target`
+  (`asset IS NOT NULL OR equipment_model IS NOT NULL`), so a bare
+  `PricingRule.objects.create(organization=...)` can no longer insert an
+  orphaned rule that `clean()` would have rejected.
+- **`Booking` status machine** — `ALLOWED_TRANSITIONS` is now actually enforced:
+  `from_db()` remembers the persisted status, `_validate_status_transition()`
+  checks the move, `clean()` and `save()` both call it (so a plain
+  `booking.status = "completed"; booking.save()` raises `ValidationError`), and
+  `transition_to(new_status, changed_by=..., notes=...)` is the central helper
+  that validates + saves + writes the `BookingStatusHistory` row atomically.
+  `can_transition(from, to)` is the class-level predicate; `INITIAL_STATUSES`
+  restricts what a newly created booking may start in (`draft`, `requested`).
+- **`equipment/apps.py`, `farms/apps.py`** — explicit
+  `default_auto_field = "django.db.models.BigAutoField"` (matches `core`,
+  `users`, `api`); no longer reliant on the project-level setting.
+
+### Files changed
+- `equipment/models.py`
+- `equipment/apps.py`
+- `farms/apps.py`
+- `equipment/tests.py` *(13 new regression tests, one per invariant)*
+- `equipment/migrations/0005_pricingrule_pricingrule_has_target.py` *(generated)*
+
+### How to verify
+```bash
+docker compose run --rm web python manage.py migrate
+docker compose run --rm web python manage.py test equipment   # 13 tests, all green
+```
+Note: the dev Postgres container needed
+`ALTER DATABASE template1 REFRESH COLLATION VERSION;` before the test database
+could be created (pre-existing glibc collation mismatch, unrelated to this work).
+
+---
+
 ## 2026-06-11 — equipment
 
 ### Summary
