@@ -60,11 +60,23 @@ class PublicListingOut(Schema):
 def _cheapest_price(asset) -> dict | None:
     """
     Asset-level pricing takes precedence over the equipment model's default,
-    matching PricingRule's own docstring. Both relations are expected to be
+    matching PricingRule's own docstring. Both levels are filtered down to
+    the asset's own organization — PricingRule.organization is a separate
+    field, not derived from asset or equipment_model, so nothing stops a row
+    from a different org sitting on either relation, and it must never be
+    advertised as this listing's price. Both relations are expected to be
     prefetched (see _public_assets in api/public.py) so this doesn't hit the
     database per listing.
     """
-    rules = list(asset.pricing_rules.all()) or list(asset.equipment_model.pricing_rules.all())
+    rules = [
+        rule for rule in asset.pricing_rules.all() if rule.organization_id == asset.organization_id
+    ]
+    if not rules:
+        rules = [
+            rule
+            for rule in asset.equipment_model.pricing_rules.all()
+            if rule.organization_id == asset.organization_id
+        ]
     if not rules:
         return None
     cheapest = min(rules, key=lambda rule: rule.price)
