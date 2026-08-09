@@ -270,6 +270,30 @@ class PublicEndpointTests(TestCase):
 
         self.assertEqual(response.json()["price"]["amount"], 300000.0)
 
+    def test_asset_level_price_does_not_leak_across_organizations(self):
+        """
+        PricingRule.organization is a separate field from asset.organization
+        - nothing keeps them in sync at the schema level, so an asset-level
+        rule belonging to a different org must be ignored too, the same as
+        the model-level fallback above.
+        """
+        other_owner = User.objects.create_user(username="other-owner-2", password="x")
+        other_org = Organization.objects.create(name="Other Org 2", owner=other_owner)
+        PricingRule.objects.create(
+            organization=other_org,
+            asset=self.available_asset,
+            pricing_unit=PricingRule.PricingUnit.DAY,
+            price=Decimal("1.00"),
+        )
+
+        response = self.client.get(
+            f"/api/v1/public/listings/{self.available_asset.public_id}"
+        )
+
+        # The legit rule from setUpTestData (250000.00) wins; the
+        # mismatched-org one (1.00) must not be considered at all.
+        self.assertEqual(response.json()["price"]["amount"], 250000.0)
+
     def test_listing_detail_hides_private_fields(self):
         response = self.client.get(
             f"/api/v1/public/listings/{self.available_asset.public_id}"
