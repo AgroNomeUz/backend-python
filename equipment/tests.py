@@ -1,11 +1,12 @@
 from decimal import Decimal
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 
-from users.models import Organization, User
+from users.models import Organization, Region, User
 
 from .models import (
     Asset,
@@ -161,3 +162,141 @@ class AppConfigTests(TestCase):
                 "django.db.models.BigAutoField",
                 label,
             )
+
+
+class PublicEndpointTests(TestCase):
+    """
+    /api/v1/public/* is the only part of the API meant to work without a
+    token. These tests guard the two things that matter most: that it really
+    doesn't need one, and that it never leaks the private fields AssetOut and
+    OrganizationOut expose to authenticated org members.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = User.objects.create_user(username="pub-owner", password="x")
+        cls.region = Region.objects.create(name="Tashkent Region", code="TK")
+        cls.org = Organization.objects.create(
+            name="Public Org",
+            owner=cls.owner,
+            region=cls.region,
+            phone="+998900000000",
+            email="secret@example.com",
+        )
+        manufacturer = Manufacturer.objects.create(name="Case IH")
+        category = EquipmentCategory.objects.create(name="Tractor", slug="tractor")
+        cls.equipment_model = EquipmentModel.objects.create(
+            manufacturer=manufacturer, category=category, name="Puma 150"
+        )
+        cls.available_asset = Asset.objects.create(
+            organization=cls.org,
+            equipment_model=cls.equipment_model,
+            operational_status=Asset.OperationalStatus.AVAILABLE,
+            serial_number="SN-SECRET-1",
+            vin_or_pin="VIN-SECRET-1",
+            notes="internal notes nobody outside the org should see",
+        )
+        cls.retired_asset = Asset.objects.create(
+            organization=cls.org,
+            equipment_model=cls.equipment_model,
+            operational_status=Asset.OperationalStatus.RETIRED,
+        )
+        PricingRule.objects.create(
+            organization=cls.org,
+            asset=cls.available_asset,
+            pricing_unit=PricingRule.PricingUnit.DAY,
+            price=Decimal("250000.00"),
+        )
+
+    def setUp(self):
+        # The stats endpoint caches its payload under a fixed key; without
+        # this, whichever test runs first would poison the rest.
+        cache.clear()
+
+    def test_listings_require_no_token(self):
+        response = self.client.get("/api/v1/public/listings")
+        self.assertEqual(response.status_code, 200)
+
+    def test_listings_only_show_available_assets(self):
+        response = self.client.get("/api/v1/public/listings")
+        ids = {item["id"] for item in response.json()["items"]}
+        self.assertIn(str(self.available_asset.public_id), ids)
+        self.assertNotIn(str(self.retired_asset.public_id), ids)
+
+    def test_retired_asset_detail_404s(self):
+        response = self.client.get(
+            f"/api/v1/public/listings/{self.retired_asset.public_id}"
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_listing_detail_includes_price_and_provider(self):
+        response = self.client.get(
+            f"/api/v1/public/listings/{self.available_asset.public_id}"
+        )
+        data = response.json()
+        self.assertEqual(data["price"]["amount"], 250000.0)
+        self.assertEqual(data["provider"]["name"], "Public Org")
+        self.assertEqual(data["provider"]["region"]["code"], "TK")
+        self.assertFalse(data["provider"]["is_verified"])
+
+    def test_listing_detail_hides_private_fields(self):
+        response = self.client.get(
+            f"/api/v1/public/listings/{self.available_asset.public_id}"
+        )
+        body = response.content.decode()
+        for leaked in (
+            self.available_asset.serial_number,
+            self.available_asset.vin_or_pin,
+            "internal notes",
+            self.org.phone,
+            self.org.email,
+        ):
+            self.assertNotIn(leaked, body)
+
+    def test_regions_endpoint_no_token(self):
+        response = self.client.get("/api/v1/public/regions")
+        self.assertEqual(response.status_code, 200)
+        codes = {row["code"] for row in response.json()}
+        self.assertIn(self.region.code, codes)
+
+    def test_stats_shape(self):
+        response = self.client.get("/api/v1/public/stats")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        expected_keys = {
+            "total_active_listings",
+            "total_equipment",
+            "total_owner_organizations",
+            "total_users",
+            "regions_with_listings",
+            "listings_by_region",
+            "listings_by_category",
+            "completed_bookings",
+            "completed_bookings_by_region",
+            "verified_owners",
+            "average_rating",
+            "new_listings_last_7_days",
+            "new_listings_last_30_days",
+            "average_owner_response_minutes",
+        }
+        self.assertEqual(set(data.keys()), expected_keys)
+        # No review model exists yet — this must stay null, not a fabricated number.
+        self.assertIsNone(data["average_rating"])
+        self.assertGreaterEqual(data["total_active_listings"], 1)
+
+    def test_stats_includes_regions_with_no_listings(self):
+        empty_region = Region.objects.create(name="Empty Region", code="EM")
+        response = self.client.get("/api/v1/public/stats")
+        by_region = {
+            row["code"]: row["listing_count"]
+            for row in response.json()["listings_by_region"]
+        }
+        self.assertEqual(by_region.get(empty_region.code), 0)
+
+    def test_org_scoped_assets_still_require_a_token(self):
+        response = self.client.get("/api/v1/assets")
+        self.assertEqual(response.status_code, 401)
+
+    def test_catalog_is_now_public_too(self):
+        response = self.client.get("/api/v1/catalog/manufacturers")
+        self.assertEqual(response.status_code, 200)

@@ -24,9 +24,10 @@ class RegionAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ("name", "region", "owner", "phone", "email", "created_at")
+    list_display = ("name", "region", "owner", "phone", "email", "is_verified", "created_at")
+    list_editable = ("is_verified",)
     list_select_related = ("region", "owner")
     search_fields = ("name", "tax_number", "owner__username")
-    list_filter = ("region",)
+    list_filter = ("region", "is_verified")
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("owner",)

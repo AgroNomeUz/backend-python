@@ -5,13 +5,15 @@ Catalog and asset endpoints.
 Two very different kinds of data live here:
 
   * Catalog (Manufacturer, EquipmentCategory, EquipmentModel) is shared
-    reference data — read-only over the API, populated by admins. The frontend
-    reads it to build the "pick your machine" flow.
+    reference data — read-only over the API, populated by admins, and public
+    (catalog_router opts out of the API-wide JWTBearer default) since none of
+    it is sensitive and both the app and the public site need it.
   * Assets are org-owned. Every asset is scoped to the caller's organization,
     and every write is mirrored into core.ActivityLog with the acting user, so
     an organization can always answer "who added / changed / removed this?".
+    Assets stay behind a bearer token — see api/public.py for the filtered,
+    public-safe view of "available" assets shown on the marketing site.
 
-All endpoints require a bearer token (the API-level JWTBearer default).
 Objects are addressed by `public_id` (UUID); integer PKs never leave here.
 """
 
@@ -47,7 +49,7 @@ from .schemas import (
     SIZE_CLASS_BANDS,
 )
 
-catalog_router = Router(tags=["Catalog"])
+catalog_router = Router(tags=["Catalog"], auth=None)
 assets_router = Router(tags=["Assets"])
 activity_router = Router(tags=["Activity"])
 
@@ -179,9 +181,7 @@ def list_equipment_models(
     if manufacturer_id:
         qs = qs.filter(manufacturer__public_id=manufacturer_id)
     if category:
-        qs = qs.filter(
-            Q(category__slug=category) | Q(category__parent__slug=category)
-        )
+        qs = qs.filter(_category_q(category))
     if is_self_propelled is not None:
         qs = qs.filter(is_self_propelled=is_self_propelled)
     if hitch_category:
@@ -201,8 +201,12 @@ def list_equipment_models(
     return qs
 
 
-def _size_class_filter(size_class: str) -> dict:
-    """Translate a size-class label back into an engine_power_kw range."""
+def _size_class_filter(size_class: str, prefix: str = "") -> dict:
+    """
+    Translate a size-class label back into an engine_power_kw range.
+    `prefix` is the relation path to EquipmentModel for querysets that don't
+    start there, e.g. "equipment_model__" when filtering Assets.
+    """
     bands = {}
     lower = None
     for ceiling, label in SIZE_CLASS_BANDS:
@@ -216,10 +220,21 @@ def _size_class_filter(size_class: str) -> dict:
     low, high = bands[size_class]
     lookup = {}
     if low is not None:
-        lookup["engine_power_kw__gte"] = low
+        lookup[f"{prefix}engine_power_kw__gte"] = low
     if high is not None:
-        lookup["engine_power_kw__lt"] = high
+        lookup[f"{prefix}engine_power_kw__lt"] = high
     return lookup
+
+
+def _category_q(category: str, prefix: str = "") -> Q:
+    """
+    Category slug filter that also matches everything under it. `prefix` is
+    the relation path to EquipmentCategory for querysets that don't start
+    there, e.g. "equipment_model__" when filtering Assets.
+    """
+    return Q(**{f"{prefix}category__slug": category}) | Q(
+        **{f"{prefix}category__parent__slug": category}
+    )
 
 
 @catalog_router.get("/equipment-models/{model_id}", response=EquipmentModelOut)
@@ -265,10 +280,7 @@ def list_assets(
     if ownership_status:
         qs = qs.filter(ownership_status=ownership_status)
     if category:
-        qs = qs.filter(
-            Q(equipment_model__category__slug=category)
-            | Q(equipment_model__category__parent__slug=category)
-        )
+        qs = qs.filter(_category_q(category, "equipment_model__"))
     if bookable is not None:
         available = Asset.OperationalStatus.AVAILABLE
         qs = (

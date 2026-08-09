@@ -334,6 +334,11 @@ class Asset(PublicIdModel):
         indexes = [
             models.Index(fields=["operational_status"]),
             models.Index(fields=["organization", "operational_status"]),
+            # Public listing feed: available machines, newest first.
+            models.Index(
+                fields=["operational_status", "-created_at"],
+                name="asset_status_created_idx",
+            ),
         ]
 
     def __str__(self) -> str:

@@ -79,6 +79,10 @@ class Organization(PublicIdModel):
     phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
 
+    # Set by staff after checking the company's documents. Drives the badge on
+    # public listings, so never let an endpoint write it.
+    is_verified = models.BooleanField(default=False, db_index=True)
+
     # Audit timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

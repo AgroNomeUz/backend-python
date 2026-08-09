@@ -17,6 +17,7 @@ from .auth import (
     decode_refresh_token,
 )
 from .models import RefreshToken
+from .public import public_router
 from .schemas import AuthOut, LoginIn, RefreshIn, SignUpIn, TokenOut
 
 api = NinjaAPI(title="Agro API", version="1.0.0", auth=JWTBearer())
@@ -24,6 +25,7 @@ api = NinjaAPI(title="Agro API", version="1.0.0", auth=JWTBearer())
 api.add_router("/catalog", catalog_router)
 api.add_router("/assets", assets_router)
 api.add_router("/activity", activity_router)
+api.add_router("/public", public_router)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
