@@ -27,6 +27,7 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 ENVIRONMENT = os.environ.get('ENVIRONMENT', default='development')
+print(ENVIRONMENT)
 
 # Application definition
 
