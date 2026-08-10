@@ -70,6 +70,12 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://api.agronome.uz",
+    "http://framework:8081",
+    "http://localhost:8081",
+]
+
 ROOT_URLCONF = 'agro.urls'
 
 TEMPLATES = [
