@@ -23,3 +23,6 @@ RUN pip install pipenv && pipenv install --system --deploy
 
 # Copy the full project
 COPY . /code/
+
+ENV SECRET_KEY=build-time-dummy
+RUN python manage.py collectstatic --noinput --clear
