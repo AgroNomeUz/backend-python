@@ -10,6 +10,7 @@ django-ninja = "*"
 pyjwt = "*"
 pydantic = {extras = ["email"], version = "*"}
 django-cors-headers = "*"
+whitenoise = "*"
 
 [dev-packages]
 
