@@ -1131,11 +1131,11 @@ class Document(PublicIdModel):
         OPERATOR_LICENSE = "operator_license", "Operator License"
         OTHER = "other", "Other"
 
+    # Required: a document with no owning organization is unreachable by any
+    # org-scoped endpoint and invisible to the audit trail.
     organization = models.ForeignKey(
         "users.Organization",
         on_delete=models.CASCADE,
-        null=True,
-        blank=True,
         related_name="documents",
     )
 
