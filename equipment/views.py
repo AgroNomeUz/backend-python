@@ -15,14 +15,22 @@ Two very different kinds of data live here:
     public-safe view of "available" assets shown on the marketing site.
 
 Objects are addressed by `public_id` (UUID); integer PKs never leave here.
+
+Every endpoint is async. Writes keep their transactional body in a sync
+`_apply_*` function wrapped with `sync_to_async`: Django has no async
+`transaction.atomic()`, and an asset write plus its ActivityLog row have to
+commit together. List endpoints without `@paginate` materialise their
+queryset explicitly, because returning a lazy queryset from an async view
+defers evaluation to serialisation, where it raises SynchronousOnlyOperation.
 """
 
 from uuid import UUID
 
+from asgiref.sync import sync_to_async
 from django.contrib.gis.geos import Point
 from django.db import transaction
 from django.db.models import Prefetch, ProtectedError, Q
-from django.shortcuts import get_object_or_404
+from django.shortcuts import aget_object_or_404, get_object_or_404
 from ninja import Router
 from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
@@ -104,6 +112,7 @@ def log_activity(request, organization, action, target, changes=None) -> None:
 
 
 def equipment_model_or_404(model_id: UUID) -> EquipmentModel:
+    """Sync — called from inside the `_apply_*` functions, under a transaction."""
     return get_object_or_404(
         EquipmentModel.objects.select_related("manufacturer", "category"),
         public_id=model_id,
@@ -114,7 +123,7 @@ def equipment_model_or_404(model_id: UUID) -> EquipmentModel:
 
 @catalog_router.get("/manufacturers", response=list[ManufacturerOut])
 @paginate(LimitOffsetPagination)
-def list_manufacturers(request, search: str | None = None):
+async def list_manufacturers(request, search: str | None = None):
     """Brands available in the catalog. `search` matches on name."""
     qs = Manufacturer.objects.all()
     if search:
@@ -125,22 +134,27 @@ def list_manufacturers(request, search: str | None = None):
 # ── catalog: categories ───────────────────────────────────────────────────────
 
 @catalog_router.get("/categories", response=list[CategoryTreeOut])
-def list_categories(request):
+async def list_categories(request):
     """
     Category tree, top-level nodes with their children inlined — one call is
     enough to render the category picker.
+
+    Materialised here rather than returned lazily: this endpoint isn't
+    paginated, so nothing else would evaluate the queryset before
+    serialisation, and the prefetch has to run inside the async context.
     """
     children = EquipmentCategory.objects.select_related("parent")
-    return (
+    qs = (
         EquipmentCategory.objects
         .filter(parent__isnull=True)
         .prefetch_related(Prefetch("subcategories", queryset=children))
     )
+    return [category async for category in qs]
 
 
 @catalog_router.get("/categories/{slug}", response=CategoryOut)
-def get_category(request, slug: str):
-    return get_object_or_404(
+async def get_category(request, slug: str):
+    return await aget_object_or_404(
         EquipmentCategory.objects.select_related("parent"), slug=slug
     )
 
@@ -149,7 +163,7 @@ def get_category(request, slug: str):
 
 @catalog_router.get("/equipment-models", response=list[EquipmentModelOut])
 @paginate(LimitOffsetPagination)
-def list_equipment_models(
+async def list_equipment_models(
     request,
     search: str | None = None,
     manufacturer_id: UUID | None = None,
@@ -237,8 +251,11 @@ def _category_q(category: str, prefix: str = "") -> Q:
 
 
 @catalog_router.get("/equipment-models/{model_id}", response=EquipmentModelOut)
-def get_equipment_model(request, model_id: UUID):
-    return equipment_model_or_404(model_id)
+async def get_equipment_model(request, model_id: UUID):
+    return await aget_object_or_404(
+        EquipmentModel.objects.select_related("manufacturer", "category"),
+        public_id=model_id,
+    )
 
 
 # ── assets: the caller organization's machines ────────────────────────────────
@@ -254,7 +271,7 @@ def org_assets(organization: Organization):
 
 @assets_router.get("", response=list[AssetOut])
 @paginate(LimitOffsetPagination)
-def list_assets(
+async def list_assets(
     request,
     search: str | None = None,
     operational_status: str | None = None,
@@ -291,10 +308,8 @@ def list_assets(
     return qs
 
 
-@assets_router.post("", response={201: AssetOut})
-def create_asset(request, data: AssetIn):
-    """Register a physical machine into the caller's organization."""
-    organization = writable_organization(request)
+def _apply_create_asset(request, organization, data: AssetIn) -> Asset:
+    """Sync transactional core of `create_asset` — see the module docstring."""
     equipment_model = equipment_model_or_404(data.equipment_model_id)
 
     payload = data.dict(exclude={"equipment_model_id", "location"})
@@ -313,25 +328,29 @@ def create_asset(request, data: AssetIn):
             changes=diff({}, asset_snapshot(asset)),
         )
 
+    # Re-read through the select_related queryset: AssetOut serialises the
+    # equipment model and its manufacturer, which an async response can't
+    # fetch lazily.
+    return org_assets(organization).get(pk=asset.pk)
+
+
+@assets_router.post("", response={201: AssetOut})
+async def create_asset(request, data: AssetIn):
+    """Register a physical machine into the caller's organization."""
+    organization = writable_organization(request)
+    asset = await sync_to_async(_apply_create_asset)(request, organization, data)
     return 201, asset
 
 
 @assets_router.get("/{asset_id}", response=AssetOut)
-def get_asset(request, asset_id: UUID):
-    return get_object_or_404(
+async def get_asset(request, asset_id: UUID):
+    return await aget_object_or_404(
         org_assets(caller_organization(request)), public_id=asset_id
     )
 
 
-@assets_router.patch("/{asset_id}", response=AssetOut)
-def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
-    """
-    Partial update — only the keys present in the request body are applied.
-    Records the field-level diff against the organization's activity log.
-    """
-    organization = writable_organization(request)
-    asset = get_object_or_404(org_assets(organization), public_id=asset_id)
-
+def _apply_update_asset(request, organization, asset: Asset, data: AssetUpdateIn) -> Asset:
+    """Sync transactional core of `update_asset` — see the module docstring."""
     fields = data.dict(exclude_unset=True)
     if not fields:
         return asset
@@ -363,15 +382,22 @@ def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
     return asset
 
 
-@assets_router.delete("/{asset_id}", response={204: None})
-def delete_asset(request, asset_id: UUID):
+@assets_router.patch("/{asset_id}", response=AssetOut)
+async def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
     """
-    Remove an asset. Machines referenced by bookings or work sessions are
-    protected at the DB level — retire those instead of deleting them.
+    Partial update — only the keys present in the request body are applied.
+    Records the field-level diff against the organization's activity log.
     """
     organization = writable_organization(request)
-    asset = get_object_or_404(org_assets(organization), public_id=asset_id)
+    asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
 
+    return await sync_to_async(_apply_update_asset)(
+        request, organization, asset, data
+    )
+
+
+def _apply_delete_asset(request, organization, asset: Asset) -> None:
+    """Sync transactional core of `delete_asset`."""
     try:
         with transaction.atomic():
             # Log before the delete: the row must outlive its target, and the
@@ -391,6 +417,18 @@ def delete_asset(request, asset_id: UUID):
             "Set its operational_status to 'retired' instead of deleting it.",
         )
 
+
+@assets_router.delete("/{asset_id}", response={204: None})
+async def delete_asset(request, asset_id: UUID):
+    """
+    Remove an asset. Machines referenced by bookings or work sessions are
+    protected at the DB level — retire those instead of deleting them.
+    """
+    organization = writable_organization(request)
+    asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
+
+    await sync_to_async(_apply_delete_asset)(request, organization, asset)
+
     return 204, None
 
 
@@ -404,10 +442,10 @@ def _point(location) -> Point | None:
 
 @assets_router.get("/{asset_id}/activity", response=list[ActivityLogOut])
 @paginate(LimitOffsetPagination)
-def asset_activity(request, asset_id: UUID):
+async def asset_activity(request, asset_id: UUID):
     """Everything that ever happened to one asset, newest first."""
     organization = caller_organization(request)
-    asset = get_object_or_404(org_assets(organization), public_id=asset_id)
+    asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
     return _org_activity(organization).filter(
         content_type__model="asset", object_id=asset.pk
     )
@@ -415,7 +453,7 @@ def asset_activity(request, asset_id: UUID):
 
 @activity_router.get("", response=list[ActivityLogOut])
 @paginate(LimitOffsetPagination)
-def list_activity(
+async def list_activity(
     request,
     action: str | None = None,
     target_type: str | None = None,

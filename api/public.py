@@ -13,6 +13,7 @@ serial numbers, VIN, exact GPS and contact details; see api/public_schemas.py.
 from datetime import timedelta
 from uuid import UUID
 
+from asgiref.sync import sync_to_async
 from django.core.cache import cache
 from django.db.models import (
     Avg,
@@ -25,7 +26,7 @@ from django.db.models import (
     Q,
     Subquery,
 )
-from django.shortcuts import get_object_or_404
+from django.shortcuts import aget_object_or_404
 from django.utils import timezone
 from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
@@ -78,7 +79,7 @@ def _public_assets():
 
 @public_router.get("/listings", response=list[PublicListingOut])
 @paginate(LimitOffsetPagination)
-def list_public_listings(
+async def list_public_listings(
     request,
     search: str | None = None,
     category: str | None = None,
@@ -116,12 +117,12 @@ def list_public_listings(
 
 
 @public_router.get("/listings/{listing_id}", response=PublicListingOut)
-def get_public_listing(request, listing_id: UUID):
+async def get_public_listing(request, listing_id: UUID):
     """
     A single listing. 404s once the machine is booked, retired or otherwise
     no longer available — same as it dropping out of the list feed.
     """
-    return get_object_or_404(_public_assets(), public_id=listing_id)
+    return await aget_object_or_404(_public_assets(), public_id=listing_id)
 
 
 # ── regions ───────────────────────────────────────────────────────────────────
@@ -143,9 +144,9 @@ def _region_listing_counts():
 
 
 @public_router.get("/regions", response=list[PublicRegionListingsOut])
-def list_public_regions(request):
+async def list_public_regions(request):
     """Every region with its current public listing count, for the map/filter."""
-    return list(_region_listing_counts())
+    return [region async for region in _region_listing_counts()]
 
 
 # ── platform stats ───────────────────────────────────────────────────────────
@@ -155,13 +156,21 @@ STATS_CACHE_SECONDS = 300
 
 
 @public_router.get("/stats", response=PublicStatsOut)
-def public_stats(request):
+async def public_stats(request):
     """
     Headline numbers for the landing page. The payload touches most tables in
     the schema, so it's cached for a few minutes rather than computed fresh
     on every hit.
+
+    Spelled out rather than using `cache.aget_or_set`, because the default it
+    takes is a *sync* callable: `_compute_public_stats` runs a dozen ORM
+    aggregates and has to go through `sync_to_async` to be legal here.
     """
-    return cache.get_or_set(STATS_CACHE_KEY, _compute_public_stats, STATS_CACHE_SECONDS)
+    stats = await cache.aget(STATS_CACHE_KEY)
+    if stats is None:
+        stats = await sync_to_async(_compute_public_stats)()
+        await cache.aset(STATS_CACHE_KEY, stats, STATS_CACHE_SECONDS)
+    return stats
 
 
 def _compute_public_stats() -> dict:
