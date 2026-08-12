@@ -25,6 +25,10 @@ class OrganizationOut(Schema):
     tax_number: str
     phone: str
     email: str
+    # "individual" until ONEID verification promotes the org to a legal
+    # entity. Sole traders never leave the default.
+    entity_type: str = "individual"
+    is_verified: bool = False
 
 
 # ── User ──────────────────────────────────────────────────────────────────────
@@ -33,6 +37,9 @@ class UserOut(Schema):
     id: UUID
     username: str
     email: str
+    phone: str | None = None
+    full_name: str = ""
+    telegram: str = ""
     first_name: str
     last_name: str
     # Effective permissions inside `organization` — an owner reads back the
