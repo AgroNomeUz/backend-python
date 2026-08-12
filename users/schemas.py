@@ -20,6 +20,9 @@ class MemberOut(Schema):
     id: UUID = Field(alias="public_id")
     username: str
     email: str
+    phone: str | None = None
+    full_name: str
+    telegram: str
     first_name: str
     last_name: str
     is_owner: bool = Field(alias="is_organization_owner")
@@ -36,9 +39,15 @@ class MemberCreateIn(Schema):
 
     Only the email is required — the employee fills in the rest after their
     first login. No password field: the server issues a one-time one.
+
+    `phone` is optional here and becomes the member's login identifier once
+    OTP auth ships; until then it is contact detail only.
     """
 
     email: EmailStr
+    phone: str | None = None
+    full_name: str = ""
+    telegram: str = ""
     first_name: str = ""
     last_name: str = ""
     permissions: list[OrgPermission] = []
@@ -64,6 +73,9 @@ class MemberUpdateIn(Schema):
     revoke by sending the codes that remain.
     """
 
+    phone: str | None = None
+    full_name: str | None = None
+    telegram: str | None = None
     first_name: str | None = None
     last_name: str | None = None
     permissions: list[OrgPermission] | None = None

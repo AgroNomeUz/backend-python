@@ -22,6 +22,21 @@ def generate_temporary_password(groups: int = 3, size: int = 4) -> str:
     )
 
 
+def normalize_phone(value: str | None) -> str | None:
+    """
+    Strip a phone number down to the digits (and leading +) it is stored as.
+
+    Users type numbers with spaces, dashes and brackets; the column is unique,
+    so `+998 90 123-45-67` and `+998901234567` must not become two accounts.
+    Returns None for anything empty, because the column is NULL-not-blank —
+    see the 0007 migration for why.
+    """
+    if not value:
+        return None
+    cleaned = "".join(char for char in value if char.isdigit() or char == "+")
+    return cleaned or None
+
+
 def username_for_email(email: str) -> str:
     """
     Derive a free username from an email's local part.
