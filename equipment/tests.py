@@ -6,6 +6,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 
+from core.models import ActivityLog
 from users.models import Organization, Region, User
 
 from .models import (
@@ -355,3 +356,132 @@ class PublicEndpointTests(TestCase):
     def test_catalog_is_now_public_too(self):
         response = self.client.get("/api/v1/catalog/manufacturers")
         self.assertEqual(response.status_code, 200)
+
+
+class AssetWriteTests(TestCase):
+    """
+    The org-scoped asset writes, which had no coverage at all.
+
+    They are the endpoints where the async conversion is riskiest: each one
+    awaits a sync `_apply_*` function that opens a transaction, writes an
+    audit row, and re-reads the asset through a select_related queryset so
+    the response can be serialised without a lazy fetch.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = User.objects.create_user(username="asset-owner", password="x")
+        cls.org = Organization.objects.create(name="Asset Org", owner=cls.owner)
+        cls.owner.organization = cls.org
+        cls.owner.save(update_fields=["organization"])
+
+        manufacturer = Manufacturer.objects.create(name="Claas")
+        category = EquipmentCategory.objects.create(name="Combine", slug="combine")
+        cls.equipment_model = EquipmentModel.objects.create(
+            manufacturer=manufacturer, category=category, name="Lexion 8900"
+        )
+
+    def auth(self):
+        from api.auth import create_access_token
+
+        token = create_access_token(self.owner.public_id)
+        return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+    def test_create_asset_returns_201_and_audits(self):
+        """
+        Also guards `equipment_model_or_404`, which stays sync because it runs
+        inside the transaction — an async-only import would NameError here.
+        """
+        response = self.client.post(
+            "/api/v1/assets",
+            data={
+                "equipment_model_id": str(self.equipment_model.public_id),
+                "serial_number": "SN-1",
+            },
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertEqual(body["serial_number"], "SN-1")
+        # Serialising AssetOut walks equipment_model -> manufacturer; if the
+        # re-read after commit were dropped this would raise instead.
+        self.assertEqual(body["equipment_model"]["name"], "Lexion 8900")
+
+        asset = Asset.objects.get(serial_number="SN-1")
+        entry = ActivityLog.objects.get(
+            organization=self.org, object_id=asset.pk,
+            action=ActivityLog.Action.CREATED,
+        )
+        self.assertEqual(entry.actor_id, self.owner.pk)
+
+    def test_create_asset_with_unknown_model_404s(self):
+        response = self.client.post(
+            "/api/v1/assets",
+            data={"equipment_model_id": "00000000-0000-0000-0000-000000000000"},
+            content_type="application/json",
+            **self.auth(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_patch_asset_records_a_status_change(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+
+        response = self.client.patch(
+            f"/api/v1/assets/{asset.public_id}",
+            data={"operational_status": Asset.OperationalStatus.UNDER_MAINTENANCE},
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        asset.refresh_from_db()
+        self.assertEqual(
+            asset.operational_status, Asset.OperationalStatus.UNDER_MAINTENANCE
+        )
+        entry = ActivityLog.objects.filter(
+            organization=self.org, object_id=asset.pk
+        ).latest("created_at")
+        self.assertEqual(entry.action, ActivityLog.Action.STATUS_CHANGED)
+
+    def test_delete_asset_returns_204_and_logs_before_deleting(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        asset_pk = asset.pk
+
+        response = self.client.delete(
+            f"/api/v1/assets/{asset.public_id}", **self.auth()
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Asset.objects.filter(pk=asset_pk).exists())
+        # The audit row must outlive its target.
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                organization=self.org,
+                object_id=asset_pk,
+                action=ActivityLog.Action.DELETED,
+            ).exists()
+        )
+
+    def test_another_orgs_asset_is_404_not_403(self):
+        other_owner = User.objects.create_user(username="other-asset-owner")
+        other_org = Organization.objects.create(name="Other", owner=other_owner)
+        foreign = Asset.objects.create(
+            organization=other_org, equipment_model=self.equipment_model
+        )
+
+        response = self.client.patch(
+            f"/api/v1/assets/{foreign.public_id}",
+            data={"serial_number": "hijacked"},
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.serial_number, "")

@@ -17,13 +17,22 @@ Authorization, in one place:
 Members are addressed by `public_id` (UUID) and always scoped to the caller's
 organization, so an id from another org returns 404 rather than 403 — ids
 can't be probed. Every write is mirrored into `core.ActivityLog`.
+
+Every endpoint here is async, but each write still runs inside a sync
+`_apply_*` function wrapped with `sync_to_async`. Django has no async
+`transaction.atomic()`, and a write plus its audit row must commit or roll
+back together — so the transactional unit stays sync and the view awaits it.
+Those functions also re-read the member through `org_members()` before
+returning, because serialising `MemberOut` touches `owned_organization` and
+an async response cannot lazily load a relation.
 """
 
 from uuid import UUID
 
+from asgiref.sync import sync_to_async
 from django.db import transaction
 from django.db.models import Q
-from django.shortcuts import get_object_or_404
+from django.shortcuts import aget_object_or_404
 from ninja import Router
 from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
@@ -68,8 +77,8 @@ def org_members(organization: Organization):
     )
 
 
-def member_or_404(organization: Organization, member_id: UUID) -> User:
-    return get_object_or_404(org_members(organization), public_id=member_id)
+async def member_or_404(organization: Organization, member_id: UUID) -> User:
+    return await aget_object_or_404(org_members(organization), public_id=member_id)
 
 
 MEMBER_AUDIT_FIELDS = [
@@ -148,19 +157,19 @@ def protect_self(request, member: User, action: str) -> None:
 # ── roster ────────────────────────────────────────────────────────────────────
 
 @members_router.get("/me", response=MemberOut)
-def get_current_member(request):
+async def get_current_member(request):
     """
     The caller's own record.
 
     Permissions can be changed mid-session by an admin, so the frontend
     re-reads this instead of trusting what the login response said.
     """
-    return member_or_404(caller_organization(request), request.auth.public_id)
+    return await member_or_404(caller_organization(request), request.auth.public_id)
 
 
 @members_router.get("", response=list[MemberOut])
 @paginate(LimitOffsetPagination)
-def list_members(
+async def list_members(
     request,
     search: str | None = None,
     is_active: bool | None = None,
@@ -188,26 +197,14 @@ def list_members(
     return qs
 
 
-@members_router.post("", response={201: MemberCreateOut})
-def create_member(request, data: MemberCreateIn):
-    """
-    Add an employee to the caller's organization.
-
-    The employee signs in with this email and the returned one-time password,
-    which is shown **once** — reset it if it is lost. They are flagged
-    `must_change_password` until they choose their own.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_USERS)
-
+def _apply_create_member(request, organization, data: MemberCreateIn, password: str) -> User:
+    """Sync transactional core of `create_member` — see the module docstring."""
     email = data.email.strip().lower()
     if User.objects.filter(email__iexact=email).exists():
         raise HttpError(400, "Email already registered")
 
     phone = normalize_phone(data.phone)
     check_phone_available(phone)
-
-    password = generate_temporary_password()
 
     with transaction.atomic():
         member = User.objects.create_user(
@@ -231,27 +228,36 @@ def create_member(request, data: MemberCreateIn):
             changes=diff({}, member_snapshot(member)),
         )
 
+    return org_members(organization).get(pk=member.pk)
+
+
+@members_router.post("", response={201: MemberCreateOut})
+async def create_member(request, data: MemberCreateIn):
+    """
+    Add an employee to the caller's organization.
+
+    The employee signs in with this email and the returned one-time password,
+    which is shown **once** — reset it if it is lost. They are flagged
+    `must_change_password` until they choose their own.
+    """
+    organization = caller_organization(request)
+    require_perm(request, OrgPermission.MANAGE_USERS)
+
+    password = generate_temporary_password()
+    member = await sync_to_async(_apply_create_member)(
+        request, organization, data, password
+    )
+
     return 201, {"member": member, "temporary_password": password}
 
 
 @members_router.get("/{member_id}", response=MemberOut)
-def get_member(request, member_id: UUID):
-    return member_or_404(caller_organization(request), member_id)
+async def get_member(request, member_id: UUID):
+    return await member_or_404(caller_organization(request), member_id)
 
 
-@members_router.patch("/{member_id}", response=MemberOut)
-def update_member(request, member_id: UUID, data: MemberUpdateIn):
-    """
-    Partial update — only the keys present in the request body are applied.
-
-    `permissions` replaces the member's whole set. Changes take effect on the
-    member's next request: permissions are read from the database on every
-    call, never from the token.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_USERS)
-    member = member_or_404(organization, member_id)
-
+def _apply_update_member(request, organization, member: User, data: MemberUpdateIn) -> User:
+    """Sync transactional core of `update_member` — see the module docstring."""
     fields = data.dict(exclude_unset=True)
     if not fields:
         return member
@@ -292,8 +298,26 @@ def update_member(request, member_id: UUID, data: MemberUpdateIn):
     return member
 
 
+@members_router.patch("/{member_id}", response=MemberOut)
+async def update_member(request, member_id: UUID, data: MemberUpdateIn):
+    """
+    Partial update — only the keys present in the request body are applied.
+
+    `permissions` replaces the member's whole set. Changes take effect on the
+    member's next request: permissions are read from the database on every
+    call, never from the token.
+    """
+    organization = caller_organization(request)
+    require_perm(request, OrgPermission.MANAGE_USERS)
+    member = await member_or_404(organization, member_id)
+
+    return await sync_to_async(_apply_update_member)(
+        request, organization, member, data
+    )
+
+
 @members_router.delete("/{member_id}", response={204: None})
-def deactivate_member(request, member_id: UUID):
+async def deactivate_member(request, member_id: UUID):
     """
     Remove an employee's access.
 
@@ -304,7 +328,7 @@ def deactivate_member(request, member_id: UUID):
     """
     organization = caller_organization(request)
     require_perm(request, OrgPermission.MANAGE_USERS)
-    member = member_or_404(organization, member_id)
+    member = await member_or_404(organization, member_id)
 
     protect_owner(member, "The organization owner cannot be deactivated")
     protect_self(request, member, "deactivate")
@@ -312,6 +336,13 @@ def deactivate_member(request, member_id: UUID):
     if not member.is_active:
         return 204, None
 
+    await sync_to_async(_apply_deactivate_member)(request, organization, member)
+
+    return 204, None
+
+
+def _apply_deactivate_member(request, organization, member: User) -> None:
+    """Sync transactional core of `deactivate_member`."""
     before = member_snapshot(member)
     member.is_active = False
 
@@ -326,27 +357,9 @@ def deactivate_member(request, member_id: UUID):
             changes=diff(before, member_snapshot(member)),
         )
 
-    return 204, None
 
-
-@members_router.post("/{member_id}/reset-password", response=PasswordResetOut)
-def reset_member_password(request, member_id: UUID):
-    """
-    Issue a fresh one-time password — for the "they lost it" case.
-
-    Revokes the member's existing sessions and re-flags them
-    `must_change_password`. The new password is shown once.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_USERS)
-    member = member_or_404(organization, member_id)
-
-    protect_owner(
-        member, "The organization owner's password cannot be reset by staff"
-    )
-    protect_self(request, member, "reset the password of")
-
-    password = generate_temporary_password()
+def _apply_reset_password(request, organization, member: User, password: str) -> User:
+    """Sync transactional core of `reset_member_password`."""
     member.set_password(password)
     member.must_change_password = True
 
@@ -361,5 +374,30 @@ def reset_member_password(request, member_id: UUID):
             # Never record the password itself, only that it was replaced.
             changes={"password": {"from": None, "to": "reset"}},
         )
+
+    return member
+
+
+@members_router.post("/{member_id}/reset-password", response=PasswordResetOut)
+async def reset_member_password(request, member_id: UUID):
+    """
+    Issue a fresh one-time password — for the "they lost it" case.
+
+    Revokes the member's existing sessions and re-flags them
+    `must_change_password`. The new password is shown once.
+    """
+    organization = caller_organization(request)
+    require_perm(request, OrgPermission.MANAGE_USERS)
+    member = await member_or_404(organization, member_id)
+
+    protect_owner(
+        member, "The organization owner's password cannot be reset by staff"
+    )
+    protect_self(request, member, "reset the password of")
+
+    password = generate_temporary_password()
+    member = await sync_to_async(_apply_reset_password)(
+        request, organization, member, password
+    )
 
     return {"member": member, "temporary_password": password}
