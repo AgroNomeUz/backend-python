@@ -41,7 +41,11 @@ from .schemas import (
     MemberUpdateIn,
     PasswordResetOut,
 )
-from .services import generate_temporary_password, username_for_email
+from .services import (
+    generate_temporary_password,
+    normalize_phone,
+    username_for_email,
+)
 
 members_router = Router(tags=["Members"])
 
@@ -68,7 +72,31 @@ def member_or_404(organization: Organization, member_id: UUID) -> User:
     return get_object_or_404(org_members(organization), public_id=member_id)
 
 
-MEMBER_AUDIT_FIELDS = ["username", "email", "first_name", "last_name", "is_active"]
+MEMBER_AUDIT_FIELDS = [
+    "username",
+    "email",
+    "phone",
+    "full_name",
+    "telegram",
+    "first_name",
+    "last_name",
+    "is_active",
+]
+
+
+def check_phone_available(phone: str | None, exclude: User | None = None) -> None:
+    """
+    Phones are unique across the whole install, not per organization — one
+    number is one person, and it will be a login identifier once OTP ships.
+    Checked here so the caller gets a 400 instead of an IntegrityError 500.
+    """
+    if phone is None:
+        return
+    clash = User.objects.filter(phone=phone)
+    if exclude is not None:
+        clash = clash.exclude(pk=exclude.pk)
+    if clash.exists():
+        raise HttpError(400, "Phone number already registered")
 
 
 def member_snapshot(member: User) -> dict:
@@ -145,6 +173,8 @@ def list_members(
         qs = qs.filter(
             Q(email__icontains=search)
             | Q(username__icontains=search)
+            | Q(phone__icontains=search)
+            | Q(full_name__icontains=search)
             | Q(first_name__icontains=search)
             | Q(last_name__icontains=search)
         )
@@ -174,6 +204,9 @@ def create_member(request, data: MemberCreateIn):
     if User.objects.filter(email__iexact=email).exists():
         raise HttpError(400, "Email already registered")
 
+    phone = normalize_phone(data.phone)
+    check_phone_available(phone)
+
     password = generate_temporary_password()
 
     with transaction.atomic():
@@ -181,6 +214,9 @@ def create_member(request, data: MemberCreateIn):
             username=username_for_email(email),
             email=email,
             password=password,
+            phone=phone,
+            full_name=data.full_name,
+            telegram=data.telegram,
             first_name=data.first_name,
             last_name=data.last_name,
             organization=organization,
@@ -220,6 +256,9 @@ def update_member(request, member_id: UUID, data: MemberUpdateIn):
     if not fields:
         return member
 
+    if "phone" in fields:
+        fields["phone"] = normalize_phone(fields["phone"])
+        check_phone_available(fields["phone"], exclude=member)
     if "permissions" in fields:
         protect_owner(member, "The organization owner's permissions cannot be changed")
         # Self-editing here is how an admin accidentally revokes their own
