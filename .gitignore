@@ -1,3 +1,12 @@
 .env
 db.sqlite3
 /staticfiles
+api_contract.md
+
+# Python bytecode — never useful in review, and it churns on every run
+__pycache__/
+*.py[cod]
+
+# Local tooling
+.idea/workspace.xml
+.venv/
