@@ -75,6 +75,8 @@ async def _issue_tokens(user: User) -> dict:
             "tax_number": org_obj.tax_number,
             "phone": org_obj.phone,
             "email": org_obj.email,
+            "entity_type": org_obj.entity_type,
+            "is_verified": org_obj.is_verified,
         }
     return {
         "access_token": access,
@@ -85,6 +87,9 @@ async def _issue_tokens(user: User) -> dict:
             "id": user.public_id,
             "username": user.username,
             "email": user.email,
+            "phone": user.phone,
+            "full_name": user.get_full_name(),
+            "telegram": user.telegram,
             "first_name": user.first_name,
             "last_name": user.last_name,
             "is_owner": is_owner,
