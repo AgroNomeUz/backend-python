@@ -80,7 +80,8 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 
 ## Feature Roadmap
 
-- [x] JWT authentication (signup, login, token refresh)
+- [x] JWT authentication (login, token refresh, logout)
+- [x] Phone + OTP login and organization signup (SMS mocked to the log)
 - [x] Organization & Region models (B2B tenant structure)
 - [x] Signup creates owner + organization in one atomic step
 - [x] Equipment domain models (catalog, assets, pricing, bookings, work orders)
@@ -130,16 +131,31 @@ python manage.py createsuperuser
 
 ## API Overview
 
-| Endpoint                    | Method | Auth  | Description                        |
-|-----------------------------|--------|-------|------------------------------------|
-| `/api/auth/signup`          | POST   | None  | Register user + create organization|
-| `/api/auth/login`           | POST   | None  | Login (username or email)          |
-| `/api/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
-| `/api/auth/password/change` | POST   | JWT   | Set your own password; clears `must_change_password` |
+| Endpoint                       | Method | Auth  | Description                        |
+|--------------------------------|--------|-------|------------------------------------|
+| `/api/v1/auth/otp/request`     | POST   | None  | Send a login code to a phone; says whether the number is known |
+| `/api/v1/auth/otp/verify`      | POST   | None  | Code → tokens, or a `signup_token` if nobody owns the number |
+| `/api/v1/auth/org/signup`      | POST   | None  | `signup_token` → new organization + its admin. The only public account-creating endpoint |
+| `/api/v1/auth/login`           | POST   | None  | Password login (phone, email or username) |
+| `/api/v1/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
+| `/api/v1/auth/logout`          | POST   | JWT   | Revoke the presented refresh token |
+| `/api/v1/auth/password/change` | POST   | JWT   | Set your own password; clears `must_change_password` |
 
-The login/signup payload carries the caller's effective `permissions`,
-`is_owner` and `must_change_password` so the frontend can route a
-freshly-invited employee straight to a password screen.
+**Phone + OTP is the front door**; email + password is kept for admins and
+back-office, and is how an employee uses the one-time password their admin
+gave them. There is no open self-registration: an unknown phone number is
+never turned into an account by itself — it gets a short-lived, single-use
+`signup_token` that only `POST /auth/org/signup` accepts.
+
+There is no SMS gateway yet: `api/sms.py` logs the message instead of sending
+it, and under `DEBUG` the code comes back in the response as `debug_code`.
+The limits around it are real — a 60s resend cooldown, hourly caps per number
+and per IP, and 5 attempts per code, all counted off the `api.PhoneOtp` table
+(tunable in `settings.py`).
+
+Every auth payload carries the caller's effective `permissions`, `is_owner`
+and `must_change_password` so the frontend can route a freshly-registered
+employee straight to a password screen.
 
 ### Catalog — shared reference data, read-only
 
@@ -184,7 +200,7 @@ Assets are scoped to `request.auth.organization`: another org's id returns
 | `/api/v1/members/{id}`                | DELETE | `users.manage`  | Deactivate + revoke their sessions|
 | `/api/v1/members/{id}/reset-password` | POST   | `users.manage`  | Issue a fresh one-time password   |
 
-`POST /members` takes just an email (plus optional names and permissions) and
+`POST /members` takes an email (plus an optional phone, names and permissions) and
 returns the new member **together with a one-time `temporary_password`, shown
 only in that response**. The employee logs in with that email and password,
 arrives with `must_change_password: true`, and clears it via
