@@ -176,6 +176,45 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'users.User'
 
+# One-time passcodes — phone + OTP is the default login (api/otp.py).
+# The limits below are enforced by counting `api.PhoneOtp` rows, not from the
+# cache: OTP volume is low, the counts are indexed, and a database-backed
+# limit holds across processes and restarts without extra infrastructure.
+OTP_CODE_LENGTH = 6
+OTP_TTL_SECONDS = 5 * 60
+# How long a client must wait before asking for another code for the same
+# number. Returned as `retry_after` so the UI can show a countdown.
+OTP_RESEND_COOLDOWN_SECONDS = 60
+# Wrong guesses allowed against a single code before it is burnt.
+OTP_MAX_ATTEMPTS = 5
+OTP_MAX_REQUESTS_PER_PHONE_PER_HOUR = 5
+OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
+# Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
+SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
+
+# DEBUG-only escape hatch for developing without an SMS gateway: these
+# numbers always get `OTP_DEV_CODE` and no message is sent. See api/sms.py.
+OTP_DEV_CODE = os.environ.get('OTP_DEV_CODE', '000000')
+OTP_TEST_PHONES = [
+    phone.strip()
+    for phone in os.environ.get('OTP_TEST_PHONES', '').split(',')
+    if phone.strip()
+]
+
+# Until an SMS gateway exists, the passcode *is* this log line — so the
+# `api.sms` logger needs a handler of its own. Everything else keeps Django's
+# defaults, where an unconfigured logger never reaches the console at INFO.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+    },
+    'loggers': {
+        'api.sms': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+    },
+}
+
 if ENVIRONMENT == 'production':
     SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = 'DENY'

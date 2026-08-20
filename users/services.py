@@ -37,20 +37,38 @@ def normalize_phone(value: str | None) -> str | None:
     return cleaned or None
 
 
-def username_for_email(email: str) -> str:
+def _free_username(base: str) -> str:
     """
-    Derive a free username from an email's local part.
+    The first unused username starting from `base`.
 
-    Staff accounts are created from an email alone, but `username` is still
-    the field Django authenticates against and it must stay unique across the
-    whole install — so collisions get a numeric suffix.
+    Nobody chooses a username any more — accounts are created from an email
+    or a phone — but `username` is still the field Django authenticates
+    against and must stay unique across the whole install, so collisions get
+    a numeric suffix.
     """
     from .models import User
 
-    base = slugify(email.split("@")[0])[:140] or "user"
+    base = base[:140] or "user"
     candidate = base
     suffix = 1
     while User.objects.filter(username=candidate).exists():
         suffix += 1
         candidate = f"{base[:140 - len(str(suffix)) - 1]}-{suffix}"
     return candidate
+
+
+def username_for_email(email: str) -> str:
+    """Derive a free username from an email's local part."""
+    return _free_username(slugify(email.split("@")[0]))
+
+
+def username_for_phone(phone: str) -> str:
+    """
+    Derive a free username from a phone number.
+
+    An org admin who signs up with OTP never types an email or a password,
+    so the number is all there is to name the account after. The leading `+`
+    is dropped because `username` is validated against Django's
+    `UnicodeUsernameValidator`, which doesn't allow it.
+    """
+    return _free_username(f"u{slugify(phone)}")
