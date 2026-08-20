@@ -29,7 +29,8 @@ from ninja.pagination import LimitOffsetPagination, paginate
 
 from core.audit import diff, request_context, snapshot
 from core.models import ActivityLog
-from users.models import Organization
+from users.models import OrgPermission, Organization
+from users.permissions import caller_organization, require_perm
 
 from .models import (
     Asset,
@@ -56,18 +57,16 @@ activity_router = Router(tags=["Activity"])
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def caller_organization(request) -> Organization:
+def writable_organization(request) -> Organization:
     """
-    The organization the authenticated user acts on behalf of.
+    The caller's organization, for an endpoint that is about to change it.
 
-    Signup always creates an org, so a user without one is a data anomaly
-    (or an admin account created via `createsuperuser`) — not something an
-    org-scoped endpoint can serve.
+    Reading the asset registry is open to every member; changing it needs
+    `equipment.manage`, which the org owner holds implicitly.
     """
-    user = request.auth
-    if user.organization_id is None:
-        raise HttpError(403, "Your account does not belong to an organization")
-    return user.organization
+    organization = caller_organization(request)
+    require_perm(request, OrgPermission.MANAGE_EQUIPMENT)
+    return organization
 
 
 # Fields whose changes are worth showing in an organization's history.
@@ -295,7 +294,7 @@ def list_assets(
 @assets_router.post("", response={201: AssetOut})
 def create_asset(request, data: AssetIn):
     """Register a physical machine into the caller's organization."""
-    organization = caller_organization(request)
+    organization = writable_organization(request)
     equipment_model = equipment_model_or_404(data.equipment_model_id)
 
     payload = data.dict(exclude={"equipment_model_id", "location"})
@@ -330,7 +329,7 @@ def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
     Partial update — only the keys present in the request body are applied.
     Records the field-level diff against the organization's activity log.
     """
-    organization = caller_organization(request)
+    organization = writable_organization(request)
     asset = get_object_or_404(org_assets(organization), public_id=asset_id)
 
     fields = data.dict(exclude_unset=True)
@@ -370,7 +369,7 @@ def delete_asset(request, asset_id: UUID):
     Remove an asset. Machines referenced by bookings or work sessions are
     protected at the DB level — retire those instead of deleting them.
     """
-    organization = caller_organization(request)
+    organization = writable_organization(request)
     asset = get_object_or_404(org_assets(organization), public_id=asset_id)
 
     try:

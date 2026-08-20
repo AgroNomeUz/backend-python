@@ -6,12 +6,21 @@ from .models import Organization, Region, User
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ("username", "email", "first_name", "last_name", "organization", "is_staff")
+    list_display = (
+        "username", "email", "first_name", "last_name", "organization",
+        "must_change_password", "is_staff",
+    )
+    list_filter = UserAdmin.list_filter + ("must_change_password",)
+    # `permissions` are org-scoped and unrelated to Django's own auth
+    # permissions above — hence the separate section.
     fieldsets = UserAdmin.fieldsets + (
-        ("Organization", {"fields": ("organization",)}),
+        (
+            "Organization",
+            {"fields": ("organization", "permissions", "must_change_password")},
+        ),
     )
     add_fieldsets = UserAdmin.add_fieldsets + (
-        ("Organization", {"fields": ("organization",)}),
+        ("Organization", {"fields": ("organization", "permissions")}),
     )
 
 

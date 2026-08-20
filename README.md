@@ -87,9 +87,9 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 - [x] Equipment catalog API (models picker: manufacturers, categories, specs)
 - [x] Org asset registry API (add/edit/remove machines, org-scoped)
 - [x] Activity log — who changed what inside an organization
+- [x] Staff management — add employees to an organization, per-member permissions
 - [ ] Rental requests & booking flow
 - [ ] Work orders: operator services billed per hectare / shift / operation
-- [ ] Staff management (invite users to an organization)
 - [ ] Farm management app (`farms/`: extract Farm, Field, CropSeason)
 - [ ] Marketplace for agro goods (`marketplace/`)
 - [ ] Payments & invoicing (`billing/`)
@@ -135,6 +135,11 @@ python manage.py createsuperuser
 | `/api/auth/signup`          | POST   | None  | Register user + create organization|
 | `/api/auth/login`           | POST   | None  | Login (username or email)          |
 | `/api/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
+| `/api/auth/password/change` | POST   | JWT   | Set your own password; clears `must_change_password` |
+
+The login/signup payload carries the caller's effective `permissions`,
+`is_owner` and `must_change_password` so the frontend can route a
+freshly-invited employee straight to a password screen.
 
 ### Catalog — shared reference data, read-only
 
@@ -167,6 +172,29 @@ Assets are scoped to `request.auth.organization`: another org's id returns
 **404**, not 403, so ids can't be probed. All list endpoints are paginated
 (`?limit=` / `?offset=`, returning `{"items": [...], "count": N}`).
 
+### Members — the caller's organization's staff
+
+| Endpoint                              | Method | Permission      | Description                       |
+|---------------------------------------|--------|-----------------|-----------------------------------|
+| `/api/v1/members/me`                  | GET    | —               | The caller's own record + permissions |
+| `/api/v1/members`                     | GET    | —               | Roster (`?search=`, `?is_active=`, `?permission=`) |
+| `/api/v1/members`                     | POST   | `users.manage`  | Add an employee by email          |
+| `/api/v1/members/{id}`                | GET    | —               | One member                        |
+| `/api/v1/members/{id}`                | PATCH  | `users.manage`  | Names, `permissions`, `is_active` |
+| `/api/v1/members/{id}`                | DELETE | `users.manage`  | Deactivate + revoke their sessions|
+| `/api/v1/members/{id}/reset-password` | POST   | `users.manage`  | Issue a fresh one-time password   |
+
+`POST /members` takes just an email (plus optional names and permissions) and
+returns the new member **together with a one-time `temporary_password`, shown
+only in that response**. The employee logs in with that email and password,
+arrives with `must_change_password: true`, and clears it via
+`POST /auth/password/change` — which also revokes every outstanding refresh
+token. Losing the one-time password is recoverable via `reset-password`.
+
+Guard rails: the owner cannot be deactivated, demoted or password-reset by
+their own staff, and nobody can change their own permissions or deactivate
+themselves — that has to come from another admin.
+
 ### Audit trail
 
 Every write to org-owned data appends a `core.ActivityLog` row — actor, action,
@@ -190,5 +218,28 @@ Region ──< Organization ──< User (members)
 
 - Every **Organization** has one **owner** (the user who signed up).
 - All users, including the owner, are **members** of exactly one organization.
-- Non-owner staff are added to the organization by the owner (future feature).
+- Non-owner staff are added via `POST /api/v1/members` by anyone holding
+  `users.manage`.
 - `user.is_organization_owner` → `True` if the user owns the org.
+
+### Permissions
+
+Org-scoped permissions live in `users.OrgPermission` and are stored per user
+in `User.permissions` (a Postgres array of codes). They are entirely separate
+from Django's own `auth.Permission` machinery, which stays for the admin site.
+
+| Code               | Gates                                        |
+|--------------------|----------------------------------------------|
+| `equipment.manage` | POST/PATCH/DELETE on `/api/v1/assets`        |
+| `users.manage`     | Every write under `/api/v1/members`          |
+
+- **Reads are open** to any member of the organization; a permission only ever
+  gates a write.
+- **The owner implicitly holds every code** (`User.has_org_perm`) and is never
+  stored with permissions, so an organization can't lock itself out. The owner
+  reads back the full set from `org_permissions`.
+- Permissions are read from the database on every request, never from the JWT,
+  so a grant or revoke takes effect on the member's next call — no re-login.
+- Gate a new write endpoint with
+  `users.permissions.require_perm(request, OrgPermission.X)`; add a code to
+  `OrgPermission` when a new manageable area ships.
