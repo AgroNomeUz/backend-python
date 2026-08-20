@@ -192,8 +192,16 @@ OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
 # Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
 SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
 
-# DEBUG-only escape hatch for developing without an SMS gateway: these
-# numbers always get `OTP_DEV_CODE` and no message is sent. See api/sms.py.
+# Escape hatches for developing without an SMS gateway. Both are refused
+# when ENVIRONMENT is 'production' — here *and* again at the point of use in
+# api/sms.py, because a leaked passcode is a live credential: whoever reads
+# it can post it to the public /auth/otp/verify and hold that person's
+# tokens. Neither is tied to DEBUG; DEBUG is about error pages.
+#
+# Numbers listed here receive the fixed `OTP_DEV_CODE` instead of a random
+# one. The list is empty by default, so the predictable code can only reach
+# a number someone named on purpose — and since the API returns the code for
+# exactly these numbers, keep real users off the list.
 OTP_DEV_CODE = os.environ.get('OTP_DEV_CODE', '000000')
 OTP_TEST_PHONES = [
     phone.strip()
@@ -201,9 +209,20 @@ OTP_TEST_PHONES = [
     if phone.strip()
 ]
 
-# Until an SMS gateway exists, the passcode *is* this log line — so the
-# `api.sms` logger needs a handler of its own. Everything else keeps Django's
-# defaults, where an unconfigured logger never reaches the console at INFO.
+# Writes real passcodes for *any* number to the log. The only way to sign in
+# as a number that isn't whitelisted while the gateway is mocked, and the
+# most dangerous setting in this file — anyone who can read the logs can take
+# over any account. Off unless explicitly asked for, and never in production.
+OTP_ECHO_CODES = (
+    os.environ.get('OTP_ECHO_CODES', 'False').lower() in ('true', '1', 'yes')
+    and ENVIRONMENT != 'production'
+)
+
+# The mocked gateway reports undelivered messages at WARNING, which Django's
+# defaults would route to the console anyway; this pins the level so the
+# reports can't be lost, and keeps the logger addressable by name for
+# anything that wants to route it elsewhere. It carries no message bodies —
+# see api/sms.py.
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -211,7 +230,7 @@ LOGGING = {
         'console': {'class': 'logging.StreamHandler'},
     },
     'loggers': {
-        'api.sms': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'api.sms': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
     },
 }
 

@@ -147,8 +147,20 @@ gave them. There is no open self-registration: an unknown phone number is
 never turned into an account by itself — it gets a short-lived, single-use
 `signup_token` that only `POST /auth/org/signup` accepts.
 
-There is no SMS gateway yet: `api/sms.py` logs the message instead of sending
-it, and under `DEBUG` the code comes back in the response as `debug_code`.
+There is no SMS gateway yet — `api/sms.py` is the seam, and it delivers
+nothing. A passcode is a bearer credential (anyone holding it can exchange it
+for that account's tokens at the public verify endpoint), so it is never
+written to the log and never returned to the caller. **Message bodies are not
+logged at all**, and the number in the delivery report is masked.
+
+To actually sign in while the gateway is mocked, pick one — both are off by
+default and both refuse to run when `ENVIRONMENT=production`:
+
+| Setting | Effect |
+|---------|--------|
+| `OTP_TEST_PHONES=+998901234567,…` | Those numbers get the fixed `OTP_DEV_CODE` (default `000000`), returned in the response as `debug_code`. Only ever list numbers you control |
+| `OTP_ECHO_CODES=true` | Writes real codes for **any** number to the log. Convenient and dangerous: anyone who can read the logs can take over any account |
+
 The limits around it are real — a 60s resend cooldown, hourly caps per number
 and per IP, and 5 attempts per code, all counted off the `api.PhoneOtp` table
 (tunable in `settings.py`).

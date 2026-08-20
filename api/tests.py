@@ -1,25 +1,33 @@
 """
 api/tests.py
 Phone-first authentication: the OTP lifecycle, the limits that make a
-six-digit secret safe, and the one public path that creates an account.
+six-digit secret safe, the disclosure rules that keep the code out of
+everyone else's hands, and the one public path that creates an account.
 
-The tests run with `DEBUG=True` where they need to know the code that was
-"sent" — there is no SMS gateway yet, so `debug_code` is how a client gets
-it (§0b). Everything else about the flow is the real thing: the code is
-hashed, burnt on use, capped in attempts, and rate-limited.
+A test learns the passcode by patching the generator, **not** by reading it
+out of a response or a log — that is the whole point of `OtpDisclosureTests`
+below, and a helper that depended on either channel would quietly stop the
+suite from noticing if the leak came back.
 """
 
 from datetime import timedelta
+from itertools import count
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from api.auth import create_access_token, create_signup_token
 from api.models import PhoneOtp, RefreshToken
+from api.sms import mask_phone
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
 
 PHONE = "+998901234567"
+
+# Escape hatches are refused in production; most tests exercise the ordinary
+# path, so they pin the environment rather than inheriting the developer's.
+DEVELOPMENT = override_settings(ENVIRONMENT="development")
 
 
 def auth(user: User) -> dict:
@@ -30,6 +38,20 @@ def auth(user: User) -> dict:
 class AuthTestCase(TestCase):
     """Shared client helpers — every test here posts JSON to `/api/v1/auth/…`."""
 
+    def setUp(self):
+        super().setUp()
+        # Deterministic, distinct codes, learned at the source. Nothing in
+        # the suite depends on the passcode being readable from outside.
+        self.issued_codes = count(100000)
+        self.last_code = None
+        patcher = patch("api.otp.get_random_string", side_effect=self._next_code)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _next_code(self, *args, **kwargs) -> str:
+        self.last_code = str(next(self.issued_codes))
+        return self.last_code
+
     def post(self, path: str, body: dict, **extra):
         return self.client.post(
             f"/api/v1/auth/{path}",
@@ -39,12 +61,10 @@ class AuthTestCase(TestCase):
         )
 
     def request_code(self, phone: str = PHONE, **extra) -> str:
-        """Ask for a code and return it. Requires `DEBUG=True`."""
+        """Ask for a code and return the one that was generated."""
         response = self.post("otp/request", {"phone": phone}, **extra)
         self.assertEqual(response.status_code, 200, response.content)
-        code = response.json()["debug_code"]
-        self.assertIsNotNone(code, "debug_code is how a test learns the code")
-        return code
+        return self.last_code
 
     def make_org(self, *, phone: str | None = None, **kwargs) -> User:
         """An existing organization and its owner."""
@@ -59,7 +79,7 @@ class AuthTestCase(TestCase):
         return owner
 
 
-@override_settings(DEBUG=True)
+@DEVELOPMENT
 class OtpRequestTests(AuthTestCase):
     def test_sends_a_code_and_reports_no_account(self):
         response = self.post("otp/request", {"phone": PHONE})
@@ -158,13 +178,97 @@ class OtpRequestTests(AuthTestCase):
 
     @override_settings(OTP_TEST_PHONES=[PHONE], OTP_DEV_CODE="424242")
     def test_whitelisted_test_number_gets_the_fixed_dev_code(self):
-        self.assertEqual(self.request_code(), "424242")
+        response = self.post("otp/request", {"phone": PHONE})
+
+        # Disclosed deliberately: the code is a constant the operator chose,
+        # and listing a number is their statement that they control it.
+        self.assertEqual(response.json()["debug_code"], "424242")
+        self.assertIsNone(self.last_code, "a whitelisted number skips the generator")
 
         verify = self.post("otp/verify", {"phone": PHONE, "code": "424242"})
         self.assertEqual(verify.json()["status"], "no_account")
 
 
-@override_settings(DEBUG=True)
+@DEVELOPMENT
+class OtpDisclosureTests(AuthTestCase):
+    """
+    Where a passcode is allowed to appear.
+
+    A live code is a bearer credential: whoever reads it can post it to the
+    public `/auth/otp/verify` and walk away with that person's tokens. So it
+    may reach exactly one place — the phone it was sent to — with two
+    deliberate, non-production exceptions, both tested here.
+    """
+
+    def log_of_one_request(self, phone: str = PHONE) -> str:
+        with self.assertLogs("api.sms", level="WARNING") as captured:
+            self.post("otp/request", {"phone": phone})
+        return "\n".join(captured.output)
+
+    def test_response_never_carries_a_live_code(self):
+        """Not even with the echo switch on — that one writes to the log."""
+        with override_settings(OTP_ECHO_CODES=True):
+            response = self.post("otp/request", {"phone": PHONE})
+
+        self.assertIsNone(response.json()["debug_code"])
+
+    def test_a_registered_users_code_is_not_handed_to_the_caller(self):
+        """
+        The takeover this closes: request a code for someone else's number,
+        read it out of the response, exchange it for their tokens.
+        """
+        self.make_org(phone=PHONE)
+
+        response = self.post("otp/request", {"phone": PHONE})
+
+        self.assertIsNone(response.json()["debug_code"])
+
+    def test_the_gateway_log_carries_neither_the_code_nor_the_number(self):
+        output = self.log_of_one_request()
+
+        self.assertNotIn(self.last_code, output)
+        self.assertNotIn(PHONE, output)
+        self.assertIn(mask_phone(PHONE), output)
+
+    def test_codes_are_not_logged_by_default(self):
+        output = self.log_of_one_request()
+
+        self.assertNotIn(self.last_code, output)
+
+    @override_settings(OTP_ECHO_CODES=True)
+    def test_echo_switch_writes_the_code_to_the_log(self):
+        """The one supported way to sign in as a number you don't own."""
+        output = self.log_of_one_request()
+
+        self.assertIn(self.last_code, output)
+        self.assertIn("never be set in production", output)
+
+    @override_settings(OTP_ECHO_CODES=True, ENVIRONMENT="production")
+    def test_echo_switch_is_refused_in_production(self):
+        output = self.log_of_one_request()
+
+        self.assertNotIn(self.last_code, output)
+
+    @override_settings(
+        OTP_TEST_PHONES=[PHONE], OTP_DEV_CODE="424242", ENVIRONMENT="production"
+    )
+    def test_test_phone_whitelist_is_ignored_in_production(self):
+        response = self.post("otp/request", {"phone": PHONE})
+
+        self.assertIsNone(response.json()["debug_code"])
+        # And the predictable code isn't the one that was issued.
+        verify = self.post("otp/verify", {"phone": PHONE, "code": "424242"})
+        self.assertEqual(verify.status_code, 400)
+
+    def test_masking_leaves_a_number_unreadable(self):
+        masked = mask_phone(PHONE)
+
+        self.assertEqual(masked, "+998*******67")
+        self.assertEqual(len(masked), len(PHONE))
+        self.assertEqual(mask_phone("12345"), "*****")
+
+
+@DEVELOPMENT
 class OtpVerifyTests(AuthTestCase):
     def test_unknown_number_gets_a_signup_token_and_no_account(self):
         code = self.request_code()
@@ -276,7 +380,7 @@ class OtpVerifyTests(AuthTestCase):
         self.assertEqual(response.status_code, 400)
 
 
-@override_settings(DEBUG=True)
+@DEVELOPMENT
 class OrgSignupTests(AuthTestCase):
     def signup_token(self, phone: str = PHONE) -> str:
         code = self.request_code(phone)

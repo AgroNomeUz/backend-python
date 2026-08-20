@@ -88,8 +88,11 @@ class OtpRequestOut(Schema):
 
     retry_after: int
     account_exists: bool
-    # DEBUG only: there is no SMS gateway yet, so a developer would otherwise
-    # have to read the code out of the server log. Always null in production.
+    # The passcode — but only for a number on the operator's
+    # `OTP_TEST_PHONES` list, whose code is the fixed `OTP_DEV_CODE` anyway.
+    # Null for every other number, including in development: an endpoint
+    # that hands an anonymous caller a live code for someone else's phone is
+    # an account takeover, not a convenience.
     debug_code: str | None = None
 
 
