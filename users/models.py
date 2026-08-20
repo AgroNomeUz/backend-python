@@ -45,6 +45,30 @@ class User(PublicIdModel, AbstractUser):
         related_name="members",
     )
 
+    # Primary login identifier. Nullable rather than blank-able: `unique`
+    # treats every "" as equal, so blank would allow exactly one phoneless
+    # account. NULLs don't collide, and accounts created before phone-first
+    # auth (or by `createsuperuser`) legitimately have none.
+    phone = models.CharField(
+        max_length=32,
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        help_text="E.164, e.g. +998901234567. The default login identifier.",
+    )
+
+    # One field, not first_name/last_name: Uzbek names don't split reliably
+    # into given/family halves, and every screen renders the whole thing.
+    # AbstractUser's two fields stay for Django admin compatibility.
+    full_name = models.CharField(max_length=255, blank=True)
+
+    telegram = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="Telegram handle without the @, for future notifications",
+    )
+
     permissions = ArrayField(
         models.CharField(max_length=32, choices=OrgPermission.choices),
         default=list,
@@ -67,6 +91,19 @@ class User(PublicIdModel, AbstractUser):
     def is_organization_owner(self) -> bool:
         """True if this user is the owner of an organization."""
         return hasattr(self, "owned_organization")
+
+    def get_full_name(self) -> str:
+        """
+        Prefer the single `full_name` field, falling back to Django's
+        first/last pair for accounts predating it.
+
+        Overridden rather than shadowed so the admin, password-reset emails
+        and anything else calling Django's own API see the same name the API
+        returns.
+        """
+        if self.full_name:
+            return self.full_name
+        return super().get_full_name()
 
     @property
     def org_permissions(self) -> list[str]:
@@ -123,7 +160,15 @@ class Organization(PublicIdModel):
     Created automatically when the first user of the organization signs up.
     That user becomes the `owner`. Additional staff are linked via
     `User.organization` FK.
+
+    Sole traders are not a separate concept: they are an organization with
+    one member and `entity_type = INDIVIDUAL`. Everything the app owns hangs
+    off an Organization, so B2C and P2P are emulated rather than modelled.
     """
+
+    class EntityType(models.TextChoices):
+        INDIVIDUAL = "individual", "Individual"
+        LEGAL_ENTITY = "legal_entity", "Legal entity"
 
     name = models.CharField(max_length=255, blank=True)
     address = models.CharField(max_length=255, blank=True)
@@ -148,6 +193,17 @@ class Organization(PublicIdModel):
     )
     phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
+
+    entity_type = models.CharField(
+        max_length=20,
+        choices=EntityType.choices,
+        default=EntityType.INDIVIDUAL,
+        db_index=True,
+        help_text=(
+            "Promoted to 'legal_entity' by ONEID verification, which is what "
+            "fills the legal fields above."
+        ),
+    )
 
     # Set by staff after checking the company's documents. Drives the badge on
     # public listings, so never let an endpoint write it.

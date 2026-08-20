@@ -176,6 +176,64 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'users.User'
 
+# One-time passcodes — phone + OTP is the default login (api/otp.py).
+# The limits below are enforced by counting `api.PhoneOtp` rows, not from the
+# cache: OTP volume is low, the counts are indexed, and a database-backed
+# limit holds across processes and restarts without extra infrastructure.
+OTP_CODE_LENGTH = 6
+OTP_TTL_SECONDS = 5 * 60
+# How long a client must wait before asking for another code for the same
+# number. Returned as `retry_after` so the UI can show a countdown.
+OTP_RESEND_COOLDOWN_SECONDS = 60
+# Wrong guesses allowed against a single code before it is burnt.
+OTP_MAX_ATTEMPTS = 5
+OTP_MAX_REQUESTS_PER_PHONE_PER_HOUR = 5
+OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
+# Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
+SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
+
+# Escape hatches for developing without an SMS gateway. Both are refused
+# when ENVIRONMENT is 'production' — here *and* again at the point of use in
+# api/sms.py, because a leaked passcode is a live credential: whoever reads
+# it can post it to the public /auth/otp/verify and hold that person's
+# tokens. Neither is tied to DEBUG; DEBUG is about error pages.
+#
+# Numbers listed here receive the fixed `OTP_DEV_CODE` instead of a random
+# one. The list is empty by default, so the predictable code can only reach
+# a number someone named on purpose — and since the API returns the code for
+# exactly these numbers, keep real users off the list.
+OTP_DEV_CODE = os.environ.get('OTP_DEV_CODE', '000000')
+OTP_TEST_PHONES = [
+    phone.strip()
+    for phone in os.environ.get('OTP_TEST_PHONES', '').split(',')
+    if phone.strip()
+]
+
+# Writes real passcodes for *any* number to the log. The only way to sign in
+# as a number that isn't whitelisted while the gateway is mocked, and the
+# most dangerous setting in this file — anyone who can read the logs can take
+# over any account. Off unless explicitly asked for, and never in production.
+OTP_ECHO_CODES = (
+    os.environ.get('OTP_ECHO_CODES', 'False').lower() in ('true', '1', 'yes')
+    and ENVIRONMENT != 'production'
+)
+
+# The mocked gateway reports undelivered messages at WARNING, which Django's
+# defaults would route to the console anyway; this pins the level so the
+# reports can't be lost, and keeps the logger addressable by name for
+# anything that wants to route it elsewhere. It carries no message bodies —
+# see api/sms.py.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+    },
+    'loggers': {
+        'api.sms': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
+}
+
 if ENVIRONMENT == 'production':
     SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = 'DENY'

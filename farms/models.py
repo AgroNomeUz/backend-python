@@ -12,9 +12,11 @@ from django.contrib.gis.db import models as gis_models
 
 
 class Farm(PublicIdModel):
-    """A farm owned or managed by a customer user."""
+    """A farm owned or managed by a customer organization."""
 
-    owner = models.ForeignKey(
+    # Named `organization` like every other org-owned model — `owner` read as
+    # a User FK at a glance, which it never was.
+    organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name="farms"
     )
     name = models.CharField(max_length=255)

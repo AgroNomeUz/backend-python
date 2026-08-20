@@ -6,7 +6,8 @@ from .models import CropSeason, Farm, Field
 
 @admin.register(Farm)
 class FarmAdmin(GISModelAdmin):
-    list_display = ["name", "owner", "region"]
+    list_display = ["name", "organization", "region"]
+    list_select_related = ["organization", "region"]
     search_fields = ["name"]
     list_filter = ["region"]
 
