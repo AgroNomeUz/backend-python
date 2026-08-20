@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from ninja.security import HttpBearer
 
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=30)
@@ -88,12 +89,45 @@ def decode_signup_token(token: str) -> dict:
 
 
 class JWTBearer(HttpBearer):
+    """
+    Bearer-token authentication for the whole API.
+
+    `is_async` is not decoration: `HttpBearer.__call__` is sync and simply
+    returns whatever `authenticate` gives it, so an async `authenticate`
+    hands back a coroutine. Ninja only awaits that if the auth object
+    advertises itself as async — without this flag it stores the un-awaited
+    coroutine as `request.auth`.
+
+    The query eagerly joins everything an authenticated request reads off the
+    user, because an async view cannot lazily load a relation: `.organization`
+    backs `caller_organization()` on every org-scoped endpoint, and
+    `.owned_organization` backs `is_organization_owner`, which drives the
+    permission checks and is serialised into member responses. Fetching them
+    lazily inside async code raises SynchronousOnlyOperation; fetching them
+    here also collapses three queries per request into one.
+    """
+
+    is_async = True
+
     async def authenticate(self, request, token: str):
         try:
             payload = decode_access_token(token)
-            from users.models import User
-            return await User.objects.aget(
-                public_id=payload["user_id"], is_active=True
+        except jwt.InvalidTokenError:
+            return None
+
+        from users.models import User
+
+        try:
+            return await (
+                User.objects
+                .select_related(
+                    "organization",
+                    "organization__region",
+                    "owned_organization",
+                )
+                .aget(public_id=payload["user_id"], is_active=True)
             )
-        except Exception:
+        except (User.DoesNotExist, ValidationError, ValueError):
+            # Unknown or deactivated user, or a token carrying something that
+            # isn't a UUID — all indistinguishable to a caller: no auth.
             return None
