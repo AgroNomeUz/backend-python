@@ -39,6 +39,8 @@ INSTALLED_APPS = [
     "whitenoise.runserver_nostatic",
     'django.contrib.staticfiles',
     'django.contrib.gis',
+    # Registers the ArrayField lookups used by users.User.permissions.
+    'django.contrib.postgres',
 
     'corsheaders',
 
