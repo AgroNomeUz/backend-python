@@ -31,7 +31,7 @@ from django.utils import timezone
 from django.utils.crypto import get_random_string
 
 from .models import PhoneOtp
-from .sms import is_test_phone, send_sms
+from .sms import echo_code_for_development, is_test_phone, send_sms
 
 
 class OtpThrottled(Exception):
@@ -49,11 +49,15 @@ class OtpInvalid(Exception):
 
 @dataclass
 class IssuedOtp:
-    """What the view needs back: when they may resend, and (DEBUG) the code."""
+    """What the view needs back: when they may resend, and rarely the code."""
 
     otp: PhoneOtp
     retry_after: int
-    debug_code: str | None
+    # Set **only** for a number on the operator's `OTP_TEST_PHONES` list,
+    # whose code is the fixed `OTP_DEV_CODE` — a constant that whoever
+    # configured it already knows. For any other number this is None, so the
+    # API can never be asked for a stranger's live passcode.
+    disclosed_code: str | None
 
 
 def _window_start() -> datetime:
@@ -62,11 +66,11 @@ def _window_start() -> datetime:
 
 def _generate_code(phone: str) -> tuple[str, bool]:
     """
-    The code to send, and whether it is the DEBUG-only fixed dev code.
+    The code to send, and whether it is the fixed dev code.
 
-    Test numbers get a predictable code so the app is usable without an SMS
-    gateway; everyone else gets `get_random_string`, which is CSPRNG-backed —
-    `random` is not, and this is a credential.
+    Whitelisted test numbers get a predictable code so the app is usable
+    without an SMS gateway; everyone else gets `get_random_string`, which is
+    CSPRNG-backed — `random` is not, and this is a credential.
     """
     if is_test_phone(phone):
         return settings.OTP_DEV_CODE, True
@@ -119,13 +123,15 @@ def issue_otp(phone: str, ip: str | None = None) -> IssuedOtp:
     if not is_dev_code:
         minutes = settings.OTP_TTL_SECONDS // 60
         send_sms(phone, f"Agronome code: {code}. Valid for {minutes} minutes.")
+        # Off by default and refused in production. The only way to log in as
+        # a number you didn't whitelist, and it goes to the log — never to
+        # the caller, who is exactly the person that shouldn't be told.
+        echo_code_for_development(phone, code)
 
     return IssuedOtp(
         otp=otp,
         retry_after=settings.OTP_RESEND_COOLDOWN_SECONDS,
-        # Handed back only in DEBUG, so a developer without a gateway can log
-        # in with a number that isn't on the test whitelist.
-        debug_code=code if settings.DEBUG else None,
+        disclosed_code=code if is_dev_code else None,
     )
 
 

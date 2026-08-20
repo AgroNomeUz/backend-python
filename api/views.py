@@ -263,7 +263,9 @@ async def otp_request(request, data: OtpRequestIn):
         # Deactivated accounts count as existing: sending their owner to a
         # create-organization screen would only fail later on a taken phone.
         "account_exists": await User.objects.filter(phone=phone).aexists(),
-        "debug_code": issued.debug_code,
+        # Null for every real number: the API never tells a caller the
+        # passcode for a number they may not own. See `IssuedOtp`.
+        "debug_code": issued.disclosed_code,
     }
 
 
