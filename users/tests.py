@@ -1,18 +1,23 @@
 """
 users/tests.py
 Identity fields: phone normalization and its global uniqueness, the single
-`full_name` field, and the organization entity type.
+`full_name` field, and the organization entity type. Then the self-service
+half — `/users/me`, the verified phone change, and the organization profile.
 
 The member endpoints are org-scoped and permission-gated, so most tests go
 through the API with a real bearer token rather than calling the view — the
 guards are as much the subject as the field is.
 """
 
+from itertools import count
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from api.auth import create_access_token
+from api.models import PhoneOtp
 from core.models import ActivityLog
-from users.models import OrgPermission, Organization, User
+from users.models import OrgPermission, Organization, Region, User
 from users.services import normalize_phone
 
 
@@ -173,3 +178,725 @@ class MemberPhoneTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(User.objects.filter(email="blocked@example.com").exists())
+
+
+class ProfileTestCase(TestCase):
+    """
+    An organization with three people in it: the owner, an admin holding
+    `users.manage`, and a member holding nothing.
+
+    The member is the interesting one — every self-service endpoint here has
+    to work for an account with no permission codes at all, which is exactly
+    what `PATCH /members/{id}` cannot do.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(name="Samarqand", code="UZ-SA")
+        cls.owner = User.objects.create_user(
+            username="owner", email="owner@example.com", phone="+998900000001"
+        )
+        cls.org = Organization.objects.create(
+            name="AgroFarm", owner=cls.owner, region=cls.region
+        )
+        cls.owner.organization = cls.org
+        cls.owner.save(update_fields=["organization"])
+
+        cls.admin = User.objects.create_user(
+            username="admin",
+            email="admin@example.com",
+            organization=cls.org,
+            permissions=[OrgPermission.MANAGE_USERS],
+        )
+        cls.member = User.objects.create_user(
+            username="member",
+            email="member@example.com",
+            phone="+998900000002",
+            full_name="Alisher",
+            organization=cls.org,
+        )
+
+    def patch_me(self, user, **body):
+        return self.client.patch(
+            "/api/v1/users/me",
+            data=body,
+            content_type="application/json",
+            **auth(user),
+        )
+
+
+class CurrentUserReadTests(ProfileTestCase):
+    """`GET /users/me` — item 4: profile and organization in one call."""
+
+    def test_returns_the_nested_organization(self):
+        response = self.client.get("/api/v1/users/me", **auth(self.member))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["id"], str(self.member.public_id))
+        self.assertEqual(body["full_name"], "Alisher")
+
+        org = body["organization"]
+        self.assertEqual(org["id"], str(self.org.public_id))
+        self.assertEqual(org["name"], "AgroFarm")
+        self.assertEqual(org["region"]["code"], "UZ-SA")
+        self.assertEqual(org["entity_type"], "individual")
+        self.assertFalse(org["is_verified"])
+
+    def test_plain_member_is_not_an_owner_and_holds_nothing(self):
+        body = self.client.get("/api/v1/users/me", **auth(self.member)).json()
+
+        self.assertFalse(body["is_owner"])
+        self.assertEqual(body["permissions"], [])
+
+    def test_owner_reads_back_every_permission_code(self):
+        body = self.client.get("/api/v1/users/me", **auth(self.owner)).json()
+
+        self.assertTrue(body["is_owner"])
+        self.assertEqual(body["permissions"], list(OrgPermission.values))
+
+    def test_matches_what_login_returned(self):
+        """
+        The frontend caches the login response and refreshes it from here, so
+        a difference between the two shows up as a field that silently
+        reverts.
+        """
+        self.member.set_password("s3cret-pass-phrase")
+        self.member.save(update_fields=["password"])
+
+        login = self.client.post(
+            "/api/v1/auth/login",
+            data={"username": "member", "password": "s3cret-pass-phrase"},
+            content_type="application/json",
+        )
+        self.assertEqual(login.status_code, 200, login.content)
+
+        me = self.client.get("/api/v1/users/me", **auth(self.member))
+        self.assertEqual(login.json()["user"], me.json())
+
+    def test_requires_authentication(self):
+        self.assertEqual(self.client.get("/api/v1/users/me").status_code, 401)
+
+
+class CurrentUserUpdateTests(ProfileTestCase):
+    """`PATCH /users/me` — item 1: the permission-free self-edit path."""
+
+    def test_member_without_users_manage_can_edit_themselves(self):
+        self.assertFalse(self.member.has_org_perm(OrgPermission.MANAGE_USERS))
+
+        response = self.patch_me(
+            self.member, full_name="Alisher Valiyev", telegram="alisher"
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.full_name, "Alisher Valiyev")
+        self.assertEqual(self.member.telegram, "alisher")
+
+    def test_the_same_member_still_cannot_use_the_admin_endpoint(self):
+        """
+        The 403 that sent the frontend here in the first place. It is correct
+        and stays — `/members/{id}` is for administering other people.
+        """
+        response = self.client.patch(
+            f"/api/v1/members/{self.member.public_id}",
+            data={"full_name": "Via the admin route"},
+            content_type="application/json",
+            **auth(self.member),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.full_name, "Alisher")
+
+    def test_the_edit_is_audited(self):
+        """§0.3 — a self-edit is still a write against the organization."""
+        self.patch_me(self.member, full_name="Alisher Valiyev")
+
+        entry = ActivityLog.objects.filter(
+            organization=self.org, action=ActivityLog.Action.UPDATED
+        ).latest("created_at")
+
+        self.assertEqual(entry.actor_id, self.member.pk)
+        self.assertEqual(entry.changes["full_name"]["from"], "Alisher")
+        self.assertEqual(entry.changes["full_name"]["to"], "Alisher Valiyev")
+
+    def test_a_no_op_edit_writes_no_audit_row(self):
+        before = ActivityLog.objects.count()
+        response = self.patch_me(self.member, full_name="Alisher")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(ActivityLog.objects.count(), before)
+
+    def test_privileged_fields_are_not_reachable(self):
+        """
+        `permissions`, `is_active` and `phone` are absent from `SelfUpdateIn`,
+        so sending them is ignored rather than applied.
+        """
+        response = self.patch_me(
+            self.member,
+            full_name="Alisher Valiyev",
+            permissions=[OrgPermission.MANAGE_USERS.value],
+            is_active=False,
+            phone="+998909998877",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.full_name, "Alisher Valiyev")
+        self.assertEqual(self.member.permissions, [])
+        self.assertTrue(self.member.is_active)
+        self.assertEqual(self.member.phone, "+998900000002")
+
+    def test_email_is_changed_and_lowercased(self):
+        response = self.patch_me(self.member, email="Alisher@Example.COM")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.email, "alisher@example.com")
+
+    def test_a_taken_email_is_refused_case_insensitively(self):
+        """The `user_email_ci_unique` constraint, surfaced as a 400."""
+        response = self.patch_me(self.member, email="OWNER@example.com")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Email already registered", response.json()["detail"])
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.email, "member@example.com")
+
+    def test_an_empty_body_changes_nothing(self):
+        response = self.patch_me(self.member)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.full_name, "Alisher")
+
+    def test_an_overlength_full_name_is_rejected_cleanly(self):
+        """
+        `User.full_name` is `varchar(255)`; Postgres would 500 on the raw
+        write. `SelfUpdateIn.full_name` carries `max_length=255` precisely so
+        this is a pydantic rejection instead — see fix (3) in fix.txt.
+
+        django-ninja's own `_default_validation_error` (ninja/errors.py)
+        hardcodes 422 for a pydantic `ValidationError`, distinct from the 400
+        an in-view `HttpError` produces — confirmed against the 1.6.2
+        django-ninja installed for this project (Pipfile.lock).
+        """
+        response = self.patch_me(self.member, full_name="x" * 400)
+
+        self.assertEqual(response.status_code, 422, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.full_name, "Alisher")
+
+
+class PhoneChangeTests(ProfileTestCase):
+    """
+    `POST /users/me/phone` — item 2: a phone change costs a code sent to the
+    new number.
+
+    The code is learned by patching the generator, never read out of a
+    response — the same rule `api/tests.py` follows, and the reason
+    `OtpDisclosureTests` exists.
+    """
+
+    NEW_PHONE = "+998905554433"
+
+    def setUp(self):
+        super().setUp()
+        self.issued_codes = count(100000)
+        self.last_code = None
+        patcher = patch("api.otp.get_random_string", side_effect=self._next_code)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _next_code(self, *args, **kwargs) -> str:
+        self.last_code = str(next(self.issued_codes))
+        return self.last_code
+
+    def start(self, phone=NEW_PHONE, user=None):
+        return self.client.post(
+            "/api/v1/users/me/phone",
+            data={"phone": phone},
+            content_type="application/json",
+            **auth(user or self.member),
+        )
+
+    def confirm(self, code, phone=NEW_PHONE, user=None):
+        return self.client.post(
+            "/api/v1/users/me/phone/verify",
+            data={"phone": phone, "code": code},
+            content_type="application/json",
+            **auth(user or self.member),
+        )
+
+    def test_the_code_goes_to_the_new_number(self):
+        response = self.start()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json(), {"retry_after": 60})
+        self.assertEqual(PhoneOtp.objects.filter(phone=self.NEW_PHONE).count(), 1)
+        # Nothing is written until the code comes back.
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, "+998900000002")
+
+    def test_the_swap_happens_on_a_correct_code(self):
+        code = None
+        self.start("+998 90 555-44-33")
+        code = self.last_code
+
+        response = self.confirm(code)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, self.NEW_PHONE)
+        self.assertEqual(response.json()["phone"], self.NEW_PHONE)
+
+    def test_the_swap_is_audited(self):
+        self.start()
+        self.confirm(self.last_code)
+
+        entry = ActivityLog.objects.filter(
+            organization=self.org, action=ActivityLog.Action.UPDATED
+        ).latest("created_at")
+
+        self.assertEqual(entry.actor_id, self.member.pk)
+        self.assertEqual(entry.changes["phone"]["from"], "+998900000002")
+        self.assertEqual(entry.changes["phone"]["to"], self.NEW_PHONE)
+
+    def test_a_wrong_code_leaves_the_number_alone(self):
+        self.start()
+
+        response = self.confirm("000000")
+
+        self.assertEqual(response.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, "+998900000002")
+
+    def test_confirming_without_starting_is_refused(self):
+        response = self.confirm("123456")
+
+        self.assertEqual(response.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, "+998900000002")
+
+    def test_a_number_someone_else_holds_is_refused_before_any_code(self):
+        response = self.start(self.owner.phone)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Phone number already registered", response.json()["detail"])
+        self.assertFalse(PhoneOtp.objects.filter(phone=self.owner.phone).exists())
+
+    def test_your_own_number_is_refused(self):
+        response = self.start(self.member.phone)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(PhoneOtp.objects.exists())
+
+    def test_a_blank_number_is_refused(self):
+        response = self.start("   ")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(PhoneOtp.objects.exists())
+
+    def test_resending_inside_the_cooldown_is_429_with_a_countdown(self):
+        self.start()
+
+        response = self.start()
+
+        self.assertEqual(response.status_code, 429)
+        body = response.json()
+        self.assertLessEqual(body["retry_after"], 60)
+        self.assertIn("detail", body)
+
+    def test_a_code_cannot_be_spent_twice(self):
+        self.start()
+        code = self.last_code
+        self.assertEqual(self.confirm(code).status_code, 200)
+
+        # Back to a third number, replaying the burnt code.
+        self.assertEqual(self.confirm(code, phone="+998907776655").status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, self.NEW_PHONE)
+
+    def test_requires_authentication(self):
+        response = self.client.post(
+            "/api/v1/users/me/phone",
+            data={"phone": self.NEW_PHONE},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+
+class OwnerPhoneProtectionTests(ProfileTestCase):
+    """
+    `PATCH /members/{id}` must not let staff move the owner's number.
+
+    Phone is the OTP login identifier, so an admin who could rewrite it could
+    point it at a handset they hold and log in as the owner — the escalation
+    that `reset-password` and `deactivate` are already owner-protected against.
+    """
+
+    def patch_member(self, target, **body):
+        return self.client.patch(
+            f"/api/v1/members/{target.public_id}",
+            data=body,
+            content_type="application/json",
+            **auth(self.admin),
+        )
+
+    def test_staff_cannot_change_the_owners_phone(self):
+        response = self.patch_member(self.owner, phone="+998909998877")
+
+        self.assertEqual(response.status_code, 403)
+        self.owner.refresh_from_db()
+        self.assertEqual(self.owner.phone, "+998900000001")
+
+    def test_staff_can_still_change_an_ordinary_members_phone(self):
+        response = self.patch_member(self.member, phone="+998 90 999 88 77")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, "+998909998877")
+
+    def test_the_owners_other_fields_are_still_editable(self):
+        """The guard is on the credential, not on the owner's whole record."""
+        response = self.patch_member(self.owner, full_name="Bosh Direktor")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.owner.refresh_from_db()
+        self.assertEqual(self.owner.full_name, "Bosh Direktor")
+
+
+class AdminSelfPhoneChangeTests(ProfileTestCase):
+    """
+    `PATCH /members/{id}` must not let an admin move their *own* phone either
+    — item 1 in fix.txt. `protect_owner` alone (`OwnerPhoneProtectionTests`
+    above) only stops staff editing the owner; a `users.manage` holder editing
+    themselves was untouched, which is the same OTP-login-identifier takeover
+    `protect_self` already closes for `permissions`, `is_active` and
+    `reset-password`.
+
+    The base `ProfileTestCase.admin` fixture has no phone, so this class gives
+    it one in its own `setUpTestData` rather than touching the shared fixture
+    — each `TestCase` subclass gets its own transaction-scoped copy of the
+    objects `setUpTestData` builds, so this cannot leak into sibling classes.
+    """
+
+    NEW_PHONE = "+998907776655"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.admin.phone = "+998900000099"
+        cls.admin.save(update_fields=["phone"])
+
+    def setUp(self):
+        super().setUp()
+        # Same OTP-capture pattern as `PhoneChangeTests`: learn the code by
+        # patching the generator, never by reading it out of a response.
+        self.issued_codes = count(300000)
+        self.last_code = None
+        patcher = patch("api.otp.get_random_string", side_effect=self._next_code)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _next_code(self, *args, **kwargs) -> str:
+        self.last_code = str(next(self.issued_codes))
+        return self.last_code
+
+    def test_an_admin_cannot_change_their_own_phone_here(self):
+        response = self.client.patch(
+            f"/api/v1/members/{self.admin.public_id}",
+            data={"phone": self.NEW_PHONE},
+            content_type="application/json",
+            **auth(self.admin),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        # The guard redirects rather than just blocking — the whole point of
+        # naming the verified route in the message.
+        self.assertIn("/users/me/phone", response.json()["detail"])
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.phone, "+998900000099")
+
+    def test_the_admin_changes_their_own_phone_through_the_verified_path(self):
+        """Proves the 400 above is a redirect, not a dead end."""
+        start = self.client.post(
+            "/api/v1/users/me/phone",
+            data={"phone": self.NEW_PHONE},
+            content_type="application/json",
+            **auth(self.admin),
+        )
+        self.assertEqual(start.status_code, 200, start.content)
+
+        response = self.client.post(
+            "/api/v1/users/me/phone/verify",
+            data={"phone": self.NEW_PHONE, "code": self.last_code},
+            content_type="application/json",
+            **auth(self.admin),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.phone, self.NEW_PHONE)
+
+    def test_the_admin_can_still_change_an_ordinary_members_phone(self):
+        """
+        Regression, run again against this fixture (where the acting admin
+        now has a phone of their own) — the new self-guard must key off
+        which record is being edited, not merely whether the actor has a
+        phone to protect.
+        """
+        response = self.client.patch(
+            f"/api/v1/members/{self.member.public_id}",
+            data={"phone": "+998 90 999 88 77"},
+            content_type="application/json",
+            **auth(self.admin),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, "+998909998877")
+
+    def test_the_owner_editing_their_own_phone_is_sent_to_the_verified_path(self):
+        """
+        Pins the *order* of the two guards, which is load-bearing for the
+        message. `protect_self` runs before `protect_owner`, so an owner
+        editing their own number is told where to go (400) rather than being
+        told staff may not touch it (403) — they are not staff here, and that
+        403 leaves them nowhere to go. Swapping the two back would still
+        refuse the write, so only this assertion catches the regression.
+        """
+        response = self.client.patch(
+            f"/api/v1/members/{self.owner.public_id}",
+            data={"phone": "+998907776655"},
+            content_type="application/json",
+            **auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("/users/me/phone", response.json()["detail"])
+        self.owner.refresh_from_db()
+        self.assertEqual(self.owner.phone, "+998900000001")
+
+
+class OrganizationProfileTests(ProfileTestCase):
+    """`GET` / `PATCH /org` — item 3."""
+
+    def patch_org(self, user, **body):
+        return self.client.patch(
+            "/api/v1/org",
+            data=body,
+            content_type="application/json",
+            **auth(user),
+        )
+
+    def test_any_member_can_read_it(self):
+        response = self.client.get("/api/v1/org", **auth(self.member))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["id"], str(self.org.public_id))
+        self.assertEqual(body["name"], "AgroFarm")
+        self.assertEqual(body["region"]["code"], "UZ-SA")
+        self.assertEqual(body["entity_type"], "individual")
+        self.assertFalse(body["is_verified"])
+        self.assertIn("created_at", body)
+
+    def test_member_count_covers_the_whole_roster(self):
+        body = self.client.get("/api/v1/org", **auth(self.member)).json()
+
+        self.assertEqual(body["member_count"], 3)
+
+    def test_member_count_ignores_other_organizations(self):
+        stranger = User.objects.create_user(username="stranger")
+        Organization.objects.create(name="Elsewhere", owner=stranger)
+
+        body = self.client.get("/api/v1/org", **auth(self.member)).json()
+
+        self.assertEqual(body["member_count"], 3)
+
+    def test_editing_requires_users_manage(self):
+        response = self.patch_org(self.member, name="Renamed")
+
+        self.assertEqual(response.status_code, 403)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "AgroFarm")
+
+    def test_an_admin_can_edit_the_profile(self):
+        response = self.patch_org(
+            self.admin,
+            name="AgroFarm LLC",
+            address="Registon 1",
+            tax_number="123456789",
+            email="info@agrofarm.uz",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "AgroFarm LLC")
+        self.assertEqual(self.org.address, "Registon 1")
+        self.assertEqual(self.org.tax_number, "123456789")
+        self.assertEqual(self.org.email, "info@agrofarm.uz")
+
+    def test_the_edit_is_audited(self):
+        self.patch_org(self.admin, name="AgroFarm LLC")
+
+        entry = ActivityLog.objects.filter(
+            organization=self.org, action=ActivityLog.Action.UPDATED
+        ).latest("created_at")
+
+        self.assertEqual(entry.actor_id, self.admin.pk)
+        self.assertEqual(entry.changes["name"]["from"], "AgroFarm")
+        self.assertEqual(entry.changes["name"]["to"], "AgroFarm LLC")
+
+    def test_the_region_can_be_moved_and_the_move_is_readable_in_history(self):
+        other = Region.objects.create(name="Buxoro", code="UZ-BU")
+
+        response = self.patch_org(self.admin, region_id=str(other.public_id))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["region"]["code"], "UZ-BU")
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.region_id, other.pk)
+
+        entry = ActivityLog.objects.filter(
+            organization=self.org, action=ActivityLog.Action.UPDATED
+        ).latest("created_at")
+        self.assertEqual(entry.changes["region"]["from"], "Samarqand (UZ-SA)")
+        self.assertEqual(entry.changes["region"]["to"], "Buxoro (UZ-BU)")
+
+    def test_an_unknown_region_is_refused(self):
+        response = self.patch_org(
+            self.admin,
+            name="AgroFarm LLC",
+            region_id="00000000-0000-0000-0000-000000000000",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unknown region", response.json()["detail"])
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "AgroFarm")
+
+    def test_is_verified_cannot_be_written(self):
+        """It drives the verified badge on public listings (§2)."""
+        self.org.is_verified = True
+        self.org.save(update_fields=["is_verified"])
+
+        response = self.patch_org(self.admin, name="AgroFarm LLC", is_verified=False)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.is_verified)
+        self.assertEqual(self.org.name, "AgroFarm LLC")
+
+    def test_entity_type_cannot_be_written(self):
+        """Only ONEID verification promotes an org to a legal entity (§2b)."""
+        response = self.patch_org(self.admin, entity_type="legal_entity")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.entity_type, Organization.EntityType.INDIVIDUAL)
+
+    def test_requires_authentication(self):
+        self.assertEqual(self.client.get("/api/v1/org").status_code, 401)
+
+    def test_an_invalid_email_is_refused(self):
+        """
+        Item 2a — `OrganizationUpdateIn.email` is `EmailStr | None` now, so a
+        malformed value never reaches `save()` (Django's own `EmailField`
+        validator does not run there).
+
+        django-ninja's `_default_validation_error` (ninja/errors.py) hardcodes
+        422 for a pydantic `ValidationError` — confirmed against the 1.6.2
+        django-ninja pinned for this project (Pipfile.lock), distinct from the
+        400 a view-level `HttpError` produces.
+        """
+        response = self.patch_org(self.admin, email="definitely not an email")
+
+        self.assertEqual(response.status_code, 422, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.email, "")
+
+    def test_the_phone_is_normalized(self):
+        """
+        Item 2b — the only phone write in the codebase that used to skip
+        `normalize_phone`. No uniqueness check here: unlike `User.phone`, an
+        org's contact number is not a login identifier and two organizations
+        may legitimately share a switchboard.
+        """
+        response = self.patch_org(self.admin, phone="+998 90 777 66 55")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.phone, "+998907776655")
+
+    def test_an_overlength_tax_number_is_rejected_cleanly(self):
+        """
+        Item 3 — `Organization.tax_number` is `varchar(32)`; without a schema
+        `max_length` this was a Postgres `DataError` surfaced as a 500.
+        """
+        response = self.patch_org(self.admin, tax_number="1" * 64)
+
+        self.assertEqual(response.status_code, 422, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.tax_number, "")
+
+    def test_the_name_cannot_be_blanked(self):
+        """
+        Item 4 — the `null`-clears-a-field coercion has no floor by default;
+        `name` needs one because `_create_org_account` already refuses an
+        empty one at signup, and the name drives public listings.
+        """
+        response = self.patch_org(self.admin, name=None)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("An organization name is required", response.json()["detail"])
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "AgroFarm")
+
+    def test_the_name_is_stored_stripped(self):
+        """Signup already strips name/address/tax_number; this path now does too."""
+        response = self.patch_org(self.admin, name="  Padded Name  ")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "Padded Name")
+
+
+class NoOrganizationUserTests(TestCase):
+    """
+    Item 5 — `PATCH /users/me` for an account with no organization.
+
+    `GET /users/me` deliberately supports this case: its docstring says a
+    user without an organization reads back `organization: null` rather than
+    a 403, matching what login already does. `PATCH` does not get the same
+    treatment — every write is audited (§0.3) and `ActivityLog.organization`
+    is non-nullable, so there is no row to hang an audit entry on for such an
+    account. The 403 is a documented floor (see `update_current_user`'s
+    docstring in `users/profile.py`), not an oversight the GET half simply
+    doesn't share — this pins that decision so a future "fix" doesn't quietly
+    make the write unaudited instead.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="solo", email="solo@example.com")
+
+    def test_get_reads_back_a_null_organization(self):
+        response = self.client.get("/api/v1/users/me", **auth(self.user))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNone(response.json()["organization"])
+
+    def test_patch_is_refused(self):
+        response = self.client.patch(
+            "/api/v1/users/me",
+            data={"full_name": "Should Not Land"},
+            content_type="application/json",
+            **auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.full_name, "")

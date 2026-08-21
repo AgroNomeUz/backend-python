@@ -428,6 +428,26 @@ class OrgSignupTests(AuthTestCase):
         self.assertEqual(entry.actor, User.objects.get(phone=PHONE))
         self.assertEqual(entry.changes["name"]["to"], "Agro Servis")
         self.assertEqual(entry.context["path"], "/api/v1/auth/org/signup")
+        # No region was given (§6b, fix.txt) — `diff` only reports keys whose
+        # value changed from `before.get(key)`, which is `None` for a fresh
+        # row, and an unset FK snapshots to `None` too, so the key is absent
+        # rather than present-and-null.
+        self.assertNotIn("region", entry.changes)
+
+    def test_org_creation_is_audited_with_the_region_when_one_is_given(self):
+        """
+        §6b — `ORG_AUDIT_FIELDS` gained `"region"` when it moved to
+        `users/profile.py`, so it is shared with this creation row too.
+        `to_jsonable` renders the FK through `str()`, i.e. `Region.__str__`,
+        which is `"Name (CODE)"` — what a human reading history wants, not
+        the public id.
+        """
+        region = Region.objects.create(name="Samarqand", code="UZ-SA")
+
+        self.signup(self.signup_token(), region_id=str(region.public_id))
+
+        entry = ActivityLog.objects.get()
+        self.assertEqual(entry.changes["region"]["to"], "Samarqand (UZ-SA)")
 
     def test_signup_token_is_single_use(self):
         token = self.signup_token()

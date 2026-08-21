@@ -219,9 +219,53 @@ arrives with `must_change_password: true`, and clears it via
 `POST /auth/password/change` — which also revokes every outstanding refresh
 token. Losing the one-time password is recoverable via `reset-password`.
 
-Guard rails: the owner cannot be deactivated, demoted or password-reset by
-their own staff, and nobody can change their own permissions or deactivate
-themselves — that has to come from another admin.
+Guard rails: the owner cannot be deactivated, demoted, password-reset or
+**have their phone changed** by their own staff, and nobody can change their
+own permissions or deactivate themselves — that has to come from another
+admin. The phone rule matters because phone is the OTP login identifier:
+without it, anyone holding `users.manage` could point the owner's number at a
+handset they control and sign in as the owner.
+
+Note this router is for administering *other* people, which is why every write
+here needs `users.manage`. A member editing their **own** profile uses
+`/api/v1/users/me` below, which needs no permission at all.
+
+### Your own profile and organization
+
+| Endpoint                        | Method | Permission     | Description                          |
+|---------------------------------|--------|----------------|--------------------------------------|
+| `/api/v1/users/me`              | GET    | —              | Your profile with the organization nested, plus `is_owner` + `permissions` |
+| `/api/v1/users/me`              | PATCH  | —              | Your own `full_name`, `telegram`, `email` |
+| `/api/v1/users/me/phone`        | POST   | —              | Start a phone change: sends a code to the **new** number |
+| `/api/v1/users/me/phone/verify` | POST   | —              | `{phone, code}` → the swap           |
+| `/api/v1/org`                   | GET    | —              | The org profile + `member_count` and `created_at` |
+| `/api/v1/org`                   | PATCH  | `users.manage` | Name, address, region, tax number, phone, email |
+
+`GET /users/me` returns exactly the `user` object that every auth response
+carries — the same builder produces both — so a client can cache what login
+gave it and refresh from here without the two drifting.
+
+`GET /users/me` supports the no-org account (`organization: null`), but
+`PATCH /users/me` 403s for the same account: every write is audited (§0.3)
+and `core.ActivityLog.organization` is non-nullable, so there is no
+organization to hang the audit row on. This is a deliberate asymmetry
+between the two, not an oversight.
+
+**Changing a phone costs a code sent to the new number**, because phone is the
+login identifier: an unverified swap on a typo locks the account out, and a
+deliberate one is a takeover. The new number is checked to be free *before* a
+code is spent on it, and the swap is audited. `PATCH /users/me` therefore has
+no `phone` field.
+
+`email`, by contrast, is accepted unverified — there is no mail gateway in this
+project, and an email signs you in only *with* a password, unlike a phone
+number, which is a session on an OTP alone. Anything that later makes email
+sufficient on its own (a password reset by email) has to bring a verification
+step with it.
+
+`PATCH /org` cannot write `is_verified` or `entity_type` at any value: they are
+not fields of the input schema. Verification is a statement the platform makes
+about an organization, not one it makes about itself.
 
 ### Audit trail
 
