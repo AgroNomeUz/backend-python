@@ -245,6 +245,12 @@ here needs `users.manage`. A member editing their **own** profile uses
 carries — the same builder produces both — so a client can cache what login
 gave it and refresh from here without the two drifting.
 
+`GET /users/me` supports the no-org account (`organization: null`), but
+`PATCH /users/me` 403s for the same account: every write is audited (§0.3)
+and `core.ActivityLog.organization` is non-nullable, so there is no
+organization to hang the audit row on. This is a deliberate asymmetry
+between the two, not an oversight.
+
 **Changing a phone costs a code sent to the new number**, because phone is the
 login identifier: an unverified swap on a typo locks the account out, and a
 deliberate one is a takeover. The new number is checked to be free *before* a

@@ -24,7 +24,7 @@ from ninja.errors import HttpError
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
 from equipment.views import activity_router, assets_router, catalog_router
-from users.models import OrgPermission, Organization, Region, User
+from users.models import Organization, Region, User
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
 from users.services import normalize_phone, username_for_phone
 from users.views import members_router

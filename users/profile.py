@@ -198,6 +198,13 @@ async def update_current_user(request, data: SelfUpdateIn):
 
     Not editable here: `permissions` and `is_active`, which are an admin's to
     set (§2b), and `phone`, which is a credential — see `POST /users/me/phone`.
+
+    Unlike `GET /users/me`, this requires the caller to belong to an
+    organization — `caller_organization` 403s a no-org account rather than
+    letting the edit through. Every write is audited (§0.3) and
+    `ActivityLog.organization` is non-nullable, so there is no organization to
+    hang the audit row on for such an account; the 403 here is a deliberate
+    floor, not an oversight that GET simply doesn't share.
     """
     organization = caller_organization(request)
     user = await sync_to_async(_apply_update_self)(
@@ -326,6 +333,26 @@ def _apply_update_org(request, organization: Organization, data: OrganizationUpd
             if region is None:
                 raise HttpError(400, "Unknown region")
         fields["region"] = region
+
+    # Matches `_create_org_account` (api/views.py) refusing an empty name at
+    # signup — the name drives public listings, so both paths that can set it
+    # enforce the same floor.
+    if "name" in fields and not fields["name"].strip():
+        raise HttpError(400, "An organization name is required")
+
+    # Signup strips name/address/tax_number before saving; this path didn't,
+    # so a pasted value could carry leading/trailing whitespace forever.
+    for stripped in ("name", "address", "tax_number"):
+        if stripped in fields:
+            fields[stripped] = fields[stripped].strip()
+
+    # The only phone write in the codebase that skipped this. Organization.phone
+    # is seeded from the admin's already-normalized number at signup, so leaving
+    # this one unnormalized would fork the column's formatting on first edit. No
+    # uniqueness check: unlike User.phone (a login identifier) an org's contact
+    # number isn't one, and two orgs may legitimately share a switchboard.
+    if "phone" in fields and fields["phone"] != "":
+        fields["phone"] = normalize_phone(fields["phone"])
 
     if not fields:
         return organization

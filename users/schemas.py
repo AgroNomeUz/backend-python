@@ -108,9 +108,9 @@ class SelfUpdateIn(Schema):
     by email ships; this field needs a verification step before it does.
     """
 
-    full_name: str | None = None
-    telegram: str | None = None
-    email: EmailStr | None = None
+    full_name: str | None = Field(None, max_length=255)
+    telegram: str | None = Field(None, max_length=64)
+    email: EmailStr | None = Field(None, max_length=254)
 
 
 class PhoneChangeIn(Schema):
@@ -179,9 +179,9 @@ class OrganizationUpdateIn(Schema):
     can't be forgotten in a guard.
     """
 
-    name: str | None = None
-    address: str | None = None
+    name: str | None = Field(None, max_length=255)
+    address: str | None = Field(None, max_length=255)
     region_id: UUID | None = None
-    tax_number: str | None = None
-    phone: str | None = None
-    email: str | None = None
+    tax_number: str | None = Field(None, max_length=32)
+    phone: str | None = Field(None, max_length=32)
+    email: EmailStr | None = Field(None, max_length=254)
