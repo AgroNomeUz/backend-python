@@ -16,16 +16,16 @@ from asgiref.sync import sync_to_async
 from django.contrib.auth import aauthenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.core.validators import validate_ipv46_address
 from django.db import transaction
 from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
-from core.audit import diff, request_context, snapshot
+from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
 from equipment.views import activity_router, assets_router, catalog_router
 from users.models import OrgPermission, Organization, Region, User
+from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
 from users.services import normalize_phone, username_for_phone
 from users.views import members_router
 from .auth import (
@@ -62,12 +62,21 @@ api.add_router("/catalog", catalog_router)
 api.add_router("/assets", assets_router)
 api.add_router("/activity", activity_router)
 api.add_router("/members", members_router)
+api.add_router("/users", me_router)
+api.add_router("/org", org_router)
 api.add_router("/public", public_router)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 async def _issue_tokens(user: User) -> dict:
+    """
+    A fresh token pair plus the profile the client caches alongside it.
+
+    The user object is built by `users.profile.user_payload`, the same builder
+    behind `GET /users/me` — the frontend refreshes its cached session from
+    that endpoint, so the two must not drift.
+    """
     access = create_access_token(user.public_id)
     refresh = create_refresh_token(user.public_id)
     await RefreshToken.objects.acreate(
@@ -75,73 +84,13 @@ async def _issue_tokens(user: User) -> dict:
         token=refresh,
         expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
     )
-    org = None
-    is_owner = False
-    if user.organization_id:
-        org_obj = await (
-            Organization.objects
-            .select_related("region")
-            .aget(pk=user.organization_id)
-        )
-        # Derived from the org we already fetched: `user.is_organization_owner`
-        # would hit the database, and this coroutine runs in an async context.
-        is_owner = org_obj.owner_id == user.pk
-        region = None
-        if org_obj.region:
-            region = {
-                "id": org_obj.region.public_id,
-                "name": org_obj.region.name,
-                "code": org_obj.region.code,
-            }
-        org = {
-            "id": org_obj.public_id,
-            "name": org_obj.name,
-            "address": org_obj.address,
-            "region": region,
-            "tax_number": org_obj.tax_number,
-            "phone": org_obj.phone,
-            "email": org_obj.email,
-            "entity_type": org_obj.entity_type,
-            "is_verified": org_obj.is_verified,
-        }
     return {
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
-        "user": {
-            "id": user.public_id,
-            "username": user.username,
-            "email": user.email,
-            "phone": user.phone,
-            "full_name": user.get_full_name(),
-            "telegram": user.telegram,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "is_owner": is_owner,
-            "permissions": (
-                list(OrgPermission.values) if is_owner else sorted(user.permissions or [])
-            ),
-            "must_change_password": user.must_change_password,
-            "organization": org,
-        },
+        "user": await user_payload(user),
     }
-
-
-def _client_ip(request) -> str | None:
-    """
-    The caller's address, or None if it isn't one.
-
-    `X-Forwarded-For` is client-controlled, and `PhoneOtp.ip` is a Postgres
-    `inet` column — an unvalidated header would turn a junk value into a 500
-    rather than a rate-limit entry.
-    """
-    ip = (request_context(request) or {}).get("ip")
-    try:
-        validate_ipv46_address(ip)
-    except (ValidationError, TypeError):
-        return None
-    return ip
 
 
 def _looks_like_phone(value: str) -> bool:
@@ -153,9 +102,6 @@ def _looks_like_phone(value: str) -> bool:
     an extra lookup for ordinary username logins.
     """
     return bool(value) and not any(char.isalpha() for char in value)
-
-
-ORG_AUDIT_FIELDS = ["name", "address", "phone", "email", "tax_number", "entity_type"]
 
 
 def _create_org_account(request, data: OrgSignUpIn, phone: str, otp_id: str) -> User:
@@ -254,7 +200,7 @@ async def otp_request(request, data: OtpRequestIn):
         raise HttpError(400, "A phone number is required")
 
     try:
-        issued = await _issue_otp_async(phone, _client_ip(request))
+        issued = await _issue_otp_async(phone, client_ip(request))
     except OtpThrottled as exc:
         return 429, {"detail": exc.detail, "retry_after": exc.retry_after}
 

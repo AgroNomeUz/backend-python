@@ -263,6 +263,12 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
         return member
 
     if "phone" in fields:
+        # The owner's number is the one credential staff must not be able to
+        # move: phone is the OTP login identifier, so rewriting it to a number
+        # you control is a takeover of the account that outranks you. Editing
+        # an ordinary member's is not an escalation — their password can
+        # already be reset from here.
+        protect_owner(member, "The organization owner's phone cannot be changed by staff")
         fields["phone"] = normalize_phone(fields["phone"])
         check_phone_available(fields["phone"], exclude=member)
     if "permissions" in fields:
