@@ -131,3 +131,46 @@ class JWTBearer(HttpBearer):
             # Unknown or deactivated user, or a token carrying something that
             # isn't a UUID — all indistinguishable to a caller: no auth.
             return None
+
+
+class OptionalJWTBearer(JWTBearer):
+    """
+    Bearer authentication that never refuses the request.
+
+    For endpoints a stranger may read but a member reads *more* of: a single
+    listing is public while it is active and available, and any status at all
+    to the organization that owns it. Ninja turns a `None` from `authenticate`
+    into a 401, so a missing or invalid token has to come back as something
+    truthy instead — `ANONYMOUS`, which views compare against.
+
+    Deliberately silent about a bad token: this is not a place to tell a
+    caller their session expired, and the endpoint behaves identically for a
+    stranger and for a stale token. Endpoints that require a session keep
+    using `JWTBearer`.
+    """
+
+    ANONYMOUS = "anonymous"
+
+    async def __call__(self, request):
+        """
+        Override the whole call, not just `authenticate`.
+
+        `HttpBearer.__call__` never reaches `authenticate` when the header is
+        missing or isn't a bearer scheme — it returns None straight away,
+        which ninja turns into a 401. That is precisely the case this class
+        exists to allow, so the substitution has to happen one level up.
+        """
+        result = super().__call__(request)
+        user = await result if result is not None else None
+        return user or self.ANONYMOUS
+
+
+def authenticated_user(request):
+    """
+    The user behind an `OptionalJWTBearer` request, or None if there isn't one.
+
+    `request.auth` under that scheme is either a User or the ANONYMOUS
+    sentinel; nothing outside this module should have to know which.
+    """
+    auth = getattr(request, "auth", None)
+    return None if auth in (None, OptionalJWTBearer.ANONYMOUS) else auth

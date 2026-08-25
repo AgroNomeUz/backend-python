@@ -1,6 +1,8 @@
 """
 core/audit.py
-Helpers for producing JSON-safe field diffs for ActivityLog.changes.
+Helpers for writing ActivityLog rows: JSON-safe field diffs, the request
+fingerprint stored beside them, and the one-line recorder every write endpoint
+calls (§0.3 — a write endpoint without an audit row is incomplete).
 """
 
 from datetime import date, datetime
@@ -49,3 +51,23 @@ def request_context(request) -> dict:
         "method": getattr(request, "method", ""),
         "path": getattr(request, "path", ""),
     }
+
+
+def log_activity(request, organization, action, target, changes=None) -> None:
+    """
+    Record one write against the organization's history.
+
+    Lives here rather than in a single app's views because every org-owned
+    domain has to call it — assets, listings, images, and inquiries and
+    bookings when they land.
+    """
+    from core.models import ActivityLog
+
+    ActivityLog.record(
+        organization=organization,
+        actor=request.auth,
+        action=action,
+        target=target,
+        changes=changes,
+        context=request_context(request),
+    )

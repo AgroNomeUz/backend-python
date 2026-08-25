@@ -23,3 +23,6 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", api.urls),
 ]
+
+# Listing photos are not routed here: core.middleware.PublicMediaWhiteNoiseMiddleware
+# serves MEDIA_URL, in development and production alike.
