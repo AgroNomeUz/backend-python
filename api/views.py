@@ -25,6 +25,7 @@ from ninja.errors import HttpError
 from core.audit import diff, request_context, snapshot
 from core.models import ActivityLog
 from equipment.views import activity_router, assets_router, catalog_router
+from listings.views import listings_router
 from users.models import OrgPermission, Organization, Region, User
 from users.services import normalize_phone, username_for_phone
 from users.views import members_router
@@ -41,6 +42,7 @@ from .auth import (
 from .models import RefreshToken
 from .otp import OtpInvalid, OtpThrottled, claim_signup_otp, issue_otp, verify_otp
 from .public import public_router
+from .regions import regions_router
 from .schemas import (
     AuthOut,
     LoginIn,
@@ -62,6 +64,12 @@ api.add_router("/catalog", catalog_router)
 api.add_router("/assets", assets_router)
 api.add_router("/activity", activity_router)
 api.add_router("/members", members_router)
+api.add_router("/listings", listings_router)
+api.add_router("/regions", regions_router)
+# Deprecated. `/public/listings` and `/public/regions` predate the Listing
+# model and still answer with their original, asset-rooted payloads so the
+# deployed frontend keeps working; `/listings` and `/regions` above are the
+# canonical replacements. `/public/stats` is not deprecated.
 api.add_router("/public", public_router)
 
 
@@ -92,6 +100,8 @@ async def _issue_tokens(user: User) -> dict:
                 "id": org_obj.region.public_id,
                 "name": org_obj.region.name,
                 "code": org_obj.region.code,
+                "slug": org_obj.region.slug,
+                "soato": org_obj.region.soato,
             }
         org = {
             "id": org_obj.public_id,

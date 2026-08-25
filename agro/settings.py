@@ -50,11 +50,14 @@ INSTALLED_APPS = [
     'api.apps.ApiConfig',
     'farms.apps.FarmsConfig',
     'equipment.apps.EquipmentConfig',
+    'listings.apps.ListingsConfig',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    # WhiteNoise plus the public subtrees of MEDIA_ROOT — see
+    # core/middleware.py for why the stock middleware can't serve uploads.
+    "core.middleware.PublicMediaWhiteNoiseMiddleware",
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -72,6 +75,28 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+
+# User uploads — listing photos today, documents later. Local disk for now
+# (§0b of the API contract); the API always returns *absolute* URLs, so the
+# eventual move to S3/MinIO is a change of STORAGES and nothing else.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# Subdirectories of MEDIA_ROOT that PublicMediaWhiteNoiseMiddleware serves,
+# in development and in production alike.
+#
+# An allowlist, not a blocklist, and deliberately so: `equipment.Document`
+# writes an organization's private papers to `documents/` in this same
+# MEDIA_ROOT. Publishing all of MEDIA_ROOT would hand every one of them to
+# anyone holding the URL. Add a name here only when everything that can ever
+# land in it is meant to be world-readable; anything else needs a
+# permission-checked endpoint instead.
+PUBLIC_MEDIA_DIRS = ["listings"]
+
+# Listing image limits, enforced in listings/views.py before anything is
+# written to disk.
+LISTING_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+LISTING_IMAGE_MAX_COUNT = 10
 
 # Only the public marketing site needs cross-origin access — everything else
 # (the app frontend, mobile clients) talks to the API same-origin or via a

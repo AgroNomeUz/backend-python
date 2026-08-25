@@ -35,7 +35,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
 
-from core.audit import diff, request_context, snapshot
+from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization
 from users.permissions import caller_organization, require_perm
@@ -98,17 +98,6 @@ def asset_snapshot(asset: Asset) -> dict:
     point = asset.current_location
     values["location"] = f"{point.y}, {point.x}" if point else None
     return values
-
-
-def log_activity(request, organization, action, target, changes=None) -> None:
-    ActivityLog.record(
-        organization=organization,
-        actor=request.auth,
-        action=action,
-        target=target,
-        changes=changes,
-        context=request_context(request),
-    )
 
 
 def equipment_model_or_404(model_id: UUID) -> EquipmentModel:

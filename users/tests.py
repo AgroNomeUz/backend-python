@@ -1,18 +1,27 @@
 """
 users/tests.py
 Identity fields: phone normalization and its global uniqueness, the single
-`full_name` field, and the organization entity type.
+`full_name` field, and the organization entity type. Plus the region
+reference data — its three identifiers and the public endpoints that read
+them.
 
 The member endpoints are org-scoped and permission-gated, so most tests go
 through the API with a real bearer token rather than calling the view — the
 guards are as much the subject as the field is.
 """
 
+from decimal import Decimal
+from io import StringIO
+
+from django.core.management import call_command
 from django.test import TestCase
 
 from api.auth import create_access_token
 from core.models import ActivityLog
-from users.models import OrgPermission, Organization, User
+from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
+from listings.models import Listing
+from users.management.commands.seed_regions import REGIONS
+from users.models import OrgPermission, Organization, Region, User
 from users.services import normalize_phone
 
 
@@ -173,3 +182,123 @@ class MemberPhoneTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(User.objects.filter(email="blocked@example.com").exists())
+
+
+class RegionIdentifierTests(TestCase):
+    """
+    A region carries three identifiers because three different things key off
+    it: `code` for the existing filters, `slug` for the URL, and `soato` for
+    the national classifier.
+    """
+
+    def test_slug_is_derived_from_the_name(self):
+        region = Region.objects.create(name="Tashkent Region", code="TK1")
+        self.assertEqual(region.slug, "tashkent-region")
+
+    def test_an_explicit_slug_is_left_alone(self):
+        region = Region.objects.create(name="Andijan", code="AN1", slug="custom")
+        self.assertEqual(region.slug, "custom")
+
+    def test_a_colliding_name_gets_a_suffix_rather_than_an_error(self):
+        first = Region.objects.create(name="Tashkent", code="T1")
+        second = Region.objects.create(name="Tashkent", code="T2")
+        self.assertEqual(first.slug, "tashkent")
+        self.assertEqual(second.slug, "tashkent-2")
+
+    def test_soato_is_null_not_blank_when_absent(self):
+        """
+        The same reason `User.phone` is nullable: `unique` treats every "" as
+        the same value, so two code-less regions would collide.
+        """
+        first = Region.objects.create(name="One", code="O1")
+        second = Region.objects.create(name="Two", code="O2")
+        self.assertIsNone(first.soato)
+        self.assertIsNone(second.soato)
+
+
+class SeedRegionsTests(TestCase):
+    def test_seeding_is_idempotent_and_fills_soato(self):
+        call_command("seed_regions", stdout=StringIO())
+        call_command("seed_regions", stdout=StringIO())
+
+        self.assertEqual(Region.objects.count(), len(REGIONS))
+        andijan = Region.objects.get(code="AN")
+        self.assertEqual(andijan.soato, "1703")
+        self.assertEqual(andijan.slug, "andijan")
+        # Every seeded region gets all three identifiers.
+        self.assertFalse(Region.objects.filter(soato__isnull=True).exists())
+        self.assertFalse(Region.objects.filter(slug="").exists())
+
+
+class RegionEndpointTests(TestCase):
+    """
+    `GET /regions` and `/regions/{slug}` — public, unpaginated, and counting
+    **active listings**, unlike the frozen `/public/regions` which still
+    counts available assets.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.region = Region.objects.create(name="Andijan", code="AN", soato="1703")
+        cls.empty_region = Region.objects.create(name="Navoiy", code="NW", soato="1712")
+
+        owner = User.objects.create_user(username="region-owner")
+        org = Organization.objects.create(name="Region Org", owner=owner, region=cls.region)
+
+        manufacturer = Manufacturer.objects.create(name="MTZ")
+        tractors = EquipmentCategory.objects.create(name="Tractor", slug="tractor")
+        combines = EquipmentCategory.objects.create(name="Combine", slug="combine")
+
+        def listing(category, count):
+            model = EquipmentModel.objects.create(
+                manufacturer=manufacturer, category=category, name=f"{category.slug}-model"
+            )
+            for _ in range(count):
+                asset = Asset.objects.create(organization=org, equipment_model=model)
+                Listing.objects.create(
+                    organization=org,
+                    asset=asset,
+                    region=cls.region,
+                    listing_type=Listing.ListingType.RENT,
+                    status=Listing.Status.ACTIVE,
+                    title="offer",
+                    price=Decimal("1"),
+                    price_unit=Listing.PriceUnit.DAY,
+                )
+
+        listing(tractors, 3)
+        listing(combines, 1)
+
+    def test_list_needs_no_token_and_carries_all_three_identifiers(self):
+        response = self.client.get("/api/v1/regions")
+        self.assertEqual(response.status_code, 200)
+        by_code = {region["code"]: region for region in response.json()}
+        self.assertEqual(by_code["AN"]["slug"], "andijan")
+        self.assertEqual(by_code["AN"]["soato"], "1703")
+
+    def test_listing_count_and_popular_equipment(self):
+        by_code = {r["code"]: r for r in self.client.get("/api/v1/regions").json()}
+        self.assertEqual(by_code["AN"]["listing_count"], 4)
+        # Busiest category first.
+        self.assertEqual(
+            by_code["AN"]["popular_equipment"],
+            [{"type": "tractor", "count": 3}, {"type": "combine", "count": 1}],
+        )
+
+    def test_a_region_with_no_listings_still_appears(self):
+        by_code = {r["code"]: r for r in self.client.get("/api/v1/regions").json()}
+        self.assertEqual(by_code["NW"]["listing_count"], 0)
+        self.assertEqual(by_code["NW"]["popular_equipment"], [])
+
+    def test_detail_by_slug(self):
+        response = self.client.get("/api/v1/regions/andijan")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["listing_count"], 4)
+
+    def test_unknown_slug_is_a_404(self):
+        self.assertEqual(self.client.get("/api/v1/regions/atlantis").status_code, 404)
+
+    def test_only_published_listings_are_counted(self):
+        Listing.objects.update(status=Listing.Status.DRAFT)
+        by_code = {r["code"]: r for r in self.client.get("/api/v1/regions").json()}
+        self.assertEqual(by_code["AN"]["listing_count"], 0)

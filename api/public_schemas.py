@@ -92,10 +92,45 @@ def _cheapest_price(asset) -> dict | None:
 # ── Regions ───────────────────────────────────────────────────────────────────
 
 class PublicRegionListingsOut(Schema):
+    """
+    The payload of the deprecated `GET /public/regions`.
+
+    Frozen: it is what the deployed frontend parses, and its `listing_count`
+    counts *available assets*. `GET /regions` (api/regions.py) is the
+    canonical replacement and counts active listings instead.
+    """
+
     id: UUID = Field(alias="public_id")
     name: str
     code: str
     listing_count: int
+
+
+class PopularEquipmentOut(Schema):
+    """One category and how many active listings a region has in it."""
+
+    # The category slug — "tractor", "combine", … — matching the
+    # `equipment_type` on a listing.
+    type: str
+    count: int
+
+
+class RegionDetailOut(Schema):
+    """
+    A region as `GET /regions` and `GET /regions/{slug}` return it.
+
+    Three identifiers, because three things key off a region: `code` for the
+    existing filters, `slug` for the URL, and `soato` for the national
+    administrative classifier the map and any district data use.
+    """
+
+    id: UUID = Field(alias="public_id")
+    name: str
+    code: str
+    slug: str
+    soato: str | None = None
+    listing_count: int
+    popular_equipment: list[PopularEquipmentOut] = []
 
 
 # ── Platform stats ───────────────────────────────────────────────────────────

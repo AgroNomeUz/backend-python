@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.db.models.functions import Lower
+from django.utils.text import slugify
 
 from core.models import PublicIdModel
 
@@ -139,10 +140,48 @@ class User(PublicIdModel, AbstractUser):
 
 
 class Region(PublicIdModel):
-    """Geographic / administrative region used to locate organizations."""
+    """
+    Geographic / administrative region used to locate organizations.
+
+    Global reference data, admin-curated and read-only over the API — every
+    organization picks from the same 14 administrative units of Uzbekistan
+    (`python manage.py seed_regions`).
+
+    Three identifiers, each for a different consumer:
+      * `code`  — ISO 3166-2:UZ without the country prefix ("AN"), what the
+        public filters take.
+      * `slug`  — the URL key for `/regions/{slug}`, derived from the name.
+      * `soato` — the national administrative classifier, which is what Uzbek
+        systems (and any district/city data added later) actually key on.
+    """
 
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=15, unique=True)
+
+    # Derived from `name` in save() when left blank, so every region has a URL
+    # key without callers having to supply one. Blank-able rather than
+    # required for the same reason it is filled in automatically: `unique`
+    # treats every "" as equal, so a blank left in the database would allow
+    # exactly one slug-less region.
+    slug = models.SlugField(max_length=64, unique=True, blank=True)
+
+    # SOATO — Uzbekistan's national classifier of administrative-territorial
+    # objects. Regions are four digits (Andijan 1703); districts and cities
+    # extend the same code to seven, which is why this is a CharField sized
+    # for the longer form rather than an integer.
+    #
+    # Nullable rather than blank-able, exactly as `User.phone` is: `unique`
+    # would treat every "" as the same value, so blank would permit only one
+    # region without a code. Every seeded region has one; a region created ad
+    # hoc gets NULL, and NULLs don't collide.
+    soato = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        help_text="SOATO administrative code, e.g. 1703 for Andijan region",
+    )
 
     class Meta:
         ordering = ["name"]
@@ -151,6 +190,29 @@ class Region(PublicIdModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.code})"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = self._derive_slug()
+        super().save(*args, **kwargs)
+
+    def _derive_slug(self) -> str:
+        """
+        A unique slug from the region's name.
+
+        Two regions can legitimately share a name stem ("Tashkent Region" and
+        "Tashkent City" don't, but a seed in another language could), so a
+        collision appends a counter rather than raising — a slug is a URL key,
+        not something a user chose.
+        """
+        base = slugify(self.name)[:60] or "region"
+        candidate = base
+        taken = Region.objects.exclude(pk=self.pk)
+        counter = 2
+        while taken.filter(slug=candidate).exists():
+            candidate = f"{base}-{counter}"
+            counter += 1
+        return candidate
 
 
 class Organization(PublicIdModel):

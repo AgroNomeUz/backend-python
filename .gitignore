@@ -1,6 +1,8 @@
 .env
 db.sqlite3
 /staticfiles
+# User uploads (listing photos). Local disk is the interim store — §0b.
+/media
 api_contract.md
 
 # Python bytecode — never useful in review, and it churns on every run
