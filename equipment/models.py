@@ -340,6 +340,17 @@ class Asset(PublicIdModel):
                 name="asset_status_created_idx",
             ),
         ]
+        constraints = [
+            # Redundant on its own — `id` is already the primary key — but it
+            # gives `listings.Listing` something to point a composite foreign
+            # key at, which is what makes "a listing's organization is its
+            # asset's organization" a database guarantee rather than a
+            # convention. Postgres requires a unique index on the referenced
+            # column pair.
+            models.UniqueConstraint(
+                fields=["id", "organization"], name="asset_id_org_unique"
+            ),
+        ]
 
     def __str__(self) -> str:
         label = (

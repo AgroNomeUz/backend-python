@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'api.apps.ApiConfig',
     'farms.apps.FarmsConfig',
     'equipment.apps.EquipmentConfig',
+    'listings.apps.ListingsConfig',
 ]
 
 MIDDLEWARE = [
@@ -72,6 +73,21 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+
+# User uploads — listing photos today, documents later. Local disk for now
+# (§0b of the API contract); the API always returns *absolute* URLs, so the
+# eventual move to S3/MinIO is a change of STORAGES and nothing else.
+#
+# Whitenoise serves STATIC, not MEDIA. In development agro/urls.py serves this
+# directory; a real deployment must put nginx (or the object store) in front
+# of MEDIA_URL.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# Listing image limits, enforced in listings/views.py before anything is
+# written to disk.
+LISTING_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+LISTING_IMAGE_MAX_COUNT = 10
 
 # Only the public marketing site needs cross-origin access — everything else
 # (the app frontend, mobile clients) talks to the API same-origin or via a
