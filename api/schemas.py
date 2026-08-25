@@ -12,6 +12,10 @@ class RegionOut(Schema):
     id: UUID
     name: str
     code: str | None
+    # Additive: the app keys its map off `soato` and its links off `slug`,
+    # and this schema is the only place it sees the org's own region.
+    slug: str = ""
+    soato: str | None = None
 
 
 # ── Organization ──────────────────────────────────────────────────────────────
