@@ -14,6 +14,8 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path
 
@@ -23,3 +25,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", api.urls),
 ]
+
+# Listing photos live on local disk for now (§0b). `static()` is a no-op when
+# DEBUG is off, which is correct: whitenoise serves STATIC only, so a real
+# deployment has to put nginx or the object store in front of MEDIA_URL.
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
