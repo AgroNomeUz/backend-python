@@ -15,7 +15,7 @@ where the old endpoint counts available assets.
 
 from asgiref.sync import sync_to_async
 from django.db.models import Count, Q
-from django.shortcuts import aget_object_or_404
+from django.http import Http404
 from ninja import Router
 
 from equipment.models import Asset
@@ -38,7 +38,7 @@ def _active_listings():
     )
 
 
-def _regions_with_counts(**filters) -> list[dict]:
+def _regions_with_counts(**filters) -> list[Region]:
     """
     Regions with their active-listing count and top categories.
 
@@ -110,7 +110,10 @@ async def list_regions(request):
 @regions_router.get("/{slug}", response=RegionDetailOut)
 async def get_region(request, slug: str):
     """One region, addressed by its slug — the region landing page."""
-    # 404s on an unknown slug before the counting queries run.
-    await aget_object_or_404(Region.objects.all(), slug=slug)
+    # The filtered lookup is the existence check: an unknown slug simply
+    # matches nothing. Asking `aget_object_or_404` first would be a third
+    # query for a fact this one already establishes.
     regions = await sync_to_async(_regions_with_counts)(slug=slug)
+    if not regions:
+        raise Http404("No region with that slug")
     return regions[0]

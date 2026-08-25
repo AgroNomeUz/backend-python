@@ -47,7 +47,13 @@ from users.models import Organization, Region
 from users.permissions import caller_organization
 
 from .models import IMAGE_EXTENSIONS, Listing, ListingImage
-from .schemas import ListingCreateIn, ListingImageOut, ListingOut, ListingUpdateIn
+from .schemas import (
+    NULLABLE_UPDATE_FIELDS,
+    ListingCreateIn,
+    ListingImageOut,
+    ListingOut,
+    ListingUpdateIn,
+)
 
 listings_router = Router(tags=["Listings"])
 
@@ -65,6 +71,7 @@ LISTING_AUDIT_FIELDS = [
     "has_delivery",
     "district",
 ]
+
 
 def listing_snapshot(listing: Listing) -> dict:
     """
@@ -208,7 +215,11 @@ async def list_listings(
     if sort:
         if sort not in SORT_OPTIONS:
             raise HttpError(400, f"Unknown sort '{sort}'")
-        qs = qs.order_by(SORT_OPTIONS[sort])
+        # `-created_at` as a tiebreaker, always. `order_by()` replaces the
+        # model's default ordering outright, and this feed is paginated: with
+        # ties left unordered — and identical prices are common — Postgres may
+        # return a tied row on two consecutive pages, or on neither.
+        qs = qs.order_by(SORT_OPTIONS[sort], "-created_at")
 
     return qs
 
@@ -335,6 +346,12 @@ def _integrity_error(exc: IntegrityError) -> HttpError:
         )
     if "listing_asset_same_org_fk" in message:
         return HttpError(400, "That machine belongs to another organization.")
+    if "listing_price_non_negative" in message:
+        return HttpError(400, "A price cannot be negative.")
+    if "listing_one_primary_image" in message:
+        # Two uploads to a listing with no photos yet, each electing itself the
+        # card image. Whichever loses is asking for something already true.
+        return HttpError(409, "Another image was made the card image just now.")
     raise exc
 
 
@@ -380,6 +397,18 @@ def _apply_update_listing(request, organization, listing: Listing, data: Listing
     fields = data.dict(exclude_unset=True)
     if not fields:
         return listing
+
+    # `exclude_unset` keeps a key the caller sent explicitly as `null`, and
+    # every column here but `region` is NOT NULL — so without this a valid
+    # JSON body reaches the database and comes back as a 500 rather than a
+    # readable refusal. Only `region_id` may legitimately be cleared.
+    nulled = sorted(
+        name
+        for name, value in fields.items()
+        if value is None and name not in NULLABLE_UPDATE_FIELDS
+    )
+    if nulled:
+        raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
 
     before = listing_snapshot(listing)
 
@@ -477,9 +506,15 @@ def _validate_image(upload: UploadedFile) -> None:
     Refuse anything that isn't one of the image formats we accept.
 
     Three separate checks, because each catches what the others don't: the
-    size cap before anything reaches disk, the extension because that is what
-    the file will be served as, and the leading bytes because the extension is
-    just a name the client chose.
+    size cap before the file is committed to storage, the extension because
+    that is what the file will be served as, and the leading bytes because the
+    extension is just a name the client chose.
+
+    The size cap is not a limit on what the process will *accept* — Django's
+    upload handlers have already buffered the body (to a temp file above
+    2.5 MB) by the time a view runs, and DATA_UPLOAD_MAX_MEMORY_SIZE does not
+    apply to file uploads. Capping the request body itself belongs at the
+    reverse proxy (`client_max_body_size`).
     """
     if upload.size and upload.size > settings.LISTING_IMAGE_MAX_BYTES:
         limit_mb = settings.LISTING_IMAGE_MAX_BYTES // (1024 * 1024)
@@ -502,21 +537,39 @@ def _apply_add_image(request, organization, listing: Listing, upload: UploadedFi
     """Sync transactional core of `add_listing_image`."""
     _validate_image(upload)
 
-    existing = listing.images.count()
-    if existing >= settings.LISTING_IMAGE_MAX_COUNT:
-        raise HttpError(
-            400,
-            f"A listing can have at most {settings.LISTING_IMAGE_MAX_COUNT} images",
-        )
-
     with transaction.atomic():
-        image = ListingImage.objects.create(
-            listing=listing,
-            file=upload,
-            sort_order=existing,
-            # The first photo is the card image until someone says otherwise.
-            is_primary=existing == 0,
-        )
+        # Counting, capping and inserting are one critical section, serialised
+        # on the listing row. Read outside the transaction, two overlapping
+        # uploads both see the same count: they slip past the cap together,
+        # claim the same sort_order, and — on a listing with no photos yet —
+        # both elect themselves primary, which the partial unique index turns
+        # into an unhandled 500. The lock is on `Listing` rather than on the
+        # images because the invariants are about the set of them.
+        Listing.objects.select_for_update().get(pk=listing.pk)
+
+        # Not `listing.images.count()`: the listing arrived through
+        # `_listing_relations`, so its images are already in
+        # `_prefetched_objects_cache` and the manager would answer from that
+        # cache — a count taken before the lock, which is the very thing being
+        # guarded against. This spelling always asks the database.
+        existing = ListingImage.objects.filter(listing=listing).count()
+        if existing >= settings.LISTING_IMAGE_MAX_COUNT:
+            raise HttpError(
+                400,
+                f"A listing can have at most {settings.LISTING_IMAGE_MAX_COUNT} images",
+            )
+
+        try:
+            image = ListingImage.objects.create(
+                listing=listing,
+                file=upload,
+                sort_order=existing,
+                # The first photo is the card image until someone says otherwise.
+                is_primary=existing == 0,
+            )
+        except IntegrityError as exc:
+            raise _integrity_error(exc)
+
         log_activity(
             request,
             organization,
@@ -547,8 +600,14 @@ async def add_listing_image(request, listing_id: UUID, file: UploadedFile = File
 def _apply_delete_image(request, organization, listing: Listing, image: ListingImage):
     """Sync transactional core of `delete_listing_image`."""
     was_primary = image.is_primary
+    stored_file = image.file
     with transaction.atomic():
-        image.file.delete(save=False)
+        # Queued rather than done here: a filesystem delete cannot be rolled
+        # back, so if the row delete or the audit write below failed, the
+        # transaction would restore a ListingImage whose file is already gone
+        # and whose URL 404s for good. on_commit runs it only once the row is
+        # certainly gone.
+        transaction.on_commit(lambda: stored_file.delete(save=False))
         image.delete()
         if was_primary:
             # Inside the transaction and after the delete, so the partial

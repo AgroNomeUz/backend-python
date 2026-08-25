@@ -11,11 +11,13 @@ would end up doing.
 """
 
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from pathlib import Path
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.db import IntegrityError, connection, transaction
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 
 from api.auth import create_access_token
 from core.models import ActivityLog
@@ -123,11 +125,24 @@ class ListingTestCase(TestCase):
 
 class InvariantTests(ListingTestCase):
     """
-    §0.5's three invariants, each checked where it is enforced: the database.
+    The invariants, each checked where it is enforced: the database.
 
     Every one of these is written through the ORM rather than the API, so a
     view that forgot its guard could not make the test pass.
     """
+
+    def test_price_cannot_be_negative(self):
+        """
+        `MinValueValidator(0)` on the field is not enough on its own — it only
+        runs under `full_clean()`, which no write path calls.
+        """
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.make_listing(price=Decimal("-1.00"))
+
+    def test_a_free_listing_is_allowed(self):
+        """The bound is `>= 0`, not `> 0`: zero is a legitimate asking price."""
+        listing = self.make_listing(price=Decimal("0.00"))
+        self.assertEqual(listing.price, Decimal("0.00"))
 
     def test_listing_cannot_point_at_another_orgs_asset(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -245,6 +260,31 @@ class PublicFeedTests(ListingTestCase):
         )
         descending = self.client.get("/api/v1/listings?sort=price_desc").json()["items"]
         self.assertEqual(descending[0]["id"], str(dear.public_id))
+
+    def test_tied_prices_sort_deterministically(self):
+        """
+        `order_by()` replaces the model's default ordering outright, so without
+        an explicit tiebreaker equal prices come back in whatever order
+        Postgres feels like — and this feed is paginated, which turns that into
+        a row appearing on two pages or on neither.
+        """
+        for _ in range(3):
+            asset = Asset.objects.create(
+                organization=self.org, equipment_model=self.equipment_model
+            )
+            self.make_listing(asset=asset, price=Decimal("250000"))
+
+        pages = [
+            [
+                item["id"]
+                for item in self.client.get(
+                    "/api/v1/listings?sort=price_asc"
+                ).json()["items"]
+            ]
+            for _ in range(3)
+        ]
+        self.assertEqual(pages[0], pages[1])
+        self.assertEqual(pages[1], pages[2])
 
     def test_unknown_sort_is_a_400(self):
         self.assertEqual(
@@ -419,6 +459,9 @@ class ListingWriteTests(ListingTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("total", response.json()["detail"])
 
+    def test_an_unknown_status_is_refused_by_the_schema(self):
+        self.assertEqual(self.post_listing(status="on-fire").status_code, 422)
+
     def test_patch_records_a_field_diff(self):
         listing = self.make_listing(status=Listing.Status.DRAFT)
         response = self.client.patch(
@@ -520,6 +563,98 @@ class ListingWriteTests(ListingTestCase):
         self.assertEqual(response.json()["items"], [])
 
 
+class ListingValidationTests(ListingTestCase):
+    """
+    The boundary between what the schema accepts and what the columns hold.
+
+    Every case here used to be a 500: Django enforces neither `max_length` nor
+    a field validator on `save()`, so an over-long string reached Postgres as
+    a DataError — which isn't an IntegrityError and so isn't something
+    `_integrity_error` can translate — and an explicitly-sent `null` reached a
+    NOT NULL column. They are 4xx now, and the point of these tests is that
+    none of them is a 5xx.
+    """
+
+    def patch(self, listing, **body):
+        return self.client.patch(
+            f"/api/v1/listings/{listing.public_id}",
+            data=body,
+            content_type="application/json",
+            **auth(self.owner),
+        )
+
+    def post(self, **overrides):
+        body = {
+            "asset_id": str(self.asset.public_id),
+            "listing_type": "rent",
+            "title": "MTZ-82",
+            "price": "400000.00",
+            "price_unit": "day",
+        }
+        body.update(overrides)
+        return self.client.post(
+            "/api/v1/listings",
+            data=body,
+            content_type="application/json",
+            **auth(self.owner),
+        )
+
+    # ── over-long strings ────────────────────────────────────────────────────
+
+    def test_an_over_long_title_is_refused(self):
+        self.assertEqual(self.post(title="x" * 256).status_code, 422)
+
+    def test_a_currency_that_is_not_three_characters_is_refused(self):
+        self.assertEqual(self.post(currency="NOT-A-CURRENCY").status_code, 422)
+        self.assertEqual(self.post(currency="UZ").status_code, 422)
+
+    def test_an_over_long_district_is_refused(self):
+        self.assertEqual(self.post(district="d" * 121).status_code, 422)
+
+    def test_an_over_long_availability_is_refused(self):
+        self.assertEqual(self.post(availability="a" * 256).status_code, 422)
+
+    def test_an_over_long_title_is_refused_on_patch_too(self):
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        self.assertEqual(self.patch(listing, title="x" * 256).status_code, 422)
+
+    # ── negative prices ──────────────────────────────────────────────────────
+
+    def test_a_negative_price_is_refused(self):
+        self.assertEqual(self.post(price="-5000.00").status_code, 422)
+        self.assertFalse(Listing.objects.filter(price__lt=0).exists())
+
+    def test_a_negative_price_is_refused_on_patch_too(self):
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        self.assertEqual(self.patch(listing, price="-1.00").status_code, 422)
+        listing.refresh_from_db()
+        self.assertEqual(listing.price, Decimal("400000.00"))
+
+    # ── explicit nulls ───────────────────────────────────────────────────────
+
+    def test_an_explicit_null_on_a_required_field_is_a_400(self):
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        for field in ("title", "price", "price_unit", "currency", "status"):
+            with self.subTest(field=field):
+                response = self.patch(listing, **{field: None})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json()["detail"])
+
+    def test_the_listing_is_untouched_after_a_null_is_refused(self):
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        self.patch(listing, title=None)
+        listing.refresh_from_db()
+        self.assertEqual(listing.title, "MTZ-82 tractor with operator")
+
+    def test_a_null_region_is_allowed_because_the_column_is_nullable(self):
+        """The one field whose `null` means "clear it" rather than a mistake."""
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        response = self.patch(listing, region_id=None)
+        self.assertEqual(response.status_code, 200, response.content)
+        listing.refresh_from_db()
+        self.assertIsNone(listing.region)
+
+
 @override_settings(LISTING_IMAGE_MAX_COUNT=2)
 class ListingImageTests(ListingTestCase):
     """
@@ -593,6 +728,24 @@ class ListingImageTests(ListingTestCase):
         self.assertTrue(promoted.is_primary)
         self.assertEqual(self.listing.images.count(), 1)
 
+    def test_deleting_an_image_removes_the_file_once_the_row_is_gone(self):
+        """
+        The file delete is queued with `transaction.on_commit`, not done
+        inline: a filesystem delete cannot be rolled back, so doing it before
+        the row is certainly gone risks a surviving ListingImage whose URL
+        404s for good. `captureOnCommitCallbacks` runs what the commit would.
+        """
+        uploaded = self.upload().json()
+        path = ListingImage.objects.get(public_id=uploaded["id"]).file.path
+        self.assertTrue(Path(path).exists())
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.delete(
+                f"{self.url}/{uploaded['id']}", **auth(self.owner)
+            )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Path(path).exists())
+
     def test_cannot_upload_to_another_orgs_listing(self):
         self.assertEqual(self.upload(user=self.rival_owner).status_code, 404)
 
@@ -619,4 +772,82 @@ class DeprecatedPublicPathTests(ListingTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             set(response.json()[0]), {"id", "name", "code", "listing_count"}
+        )
+
+
+@override_settings(LISTING_IMAGE_MAX_COUNT=3)
+class ConcurrentUploadTests(TransactionTestCase):
+    """
+    Uploads arriving at once.
+
+    Counting the existing images, checking them against the cap and inserting
+    the new row are one critical section, serialised on the listing row. Read
+    outside a transaction, overlapping uploads all see the same count: they
+    slip past the cap together, claim the same `sort_order`, and — on a listing
+    with no photos yet — all elect themselves primary, which the partial unique
+    index turns into a 500.
+
+    A `TransactionTestCase` because real threads need real commits: the usual
+    `TestCase` wraps everything in one transaction that no other connection can
+    see. The assertions are about invariants rather than about a particular
+    interleaving, so nothing here depends on the race actually being hit.
+    """
+
+    def setUp(self):
+        self._media = tempfile.TemporaryDirectory()
+        self.addCleanup(self._media.cleanup)
+        override = override_settings(MEDIA_ROOT=self._media.name)
+        override.enable()
+        self.addCleanup(override.disable)
+
+        region = Region.objects.create(name="Race Region", code="RC", soato="9999")
+        owner = User.objects.create_user(username="race-owner", password="x")
+        org = Organization.objects.create(name="Race Org", owner=owner, region=region)
+        owner.organization = org
+        owner.save(update_fields=["organization"])
+
+        manufacturer = Manufacturer.objects.create(name="MTZ")
+        category = EquipmentCategory.objects.create(name="Tractor", slug="tractor")
+        model = EquipmentModel.objects.create(
+            manufacturer=manufacturer, category=category, name="82.1"
+        )
+        asset = Asset.objects.create(organization=org, equipment_model=model)
+
+        self.listing = Listing.objects.create(
+            organization=org,
+            asset=asset,
+            region=region,
+            listing_type=Listing.ListingType.RENT,
+            status=Listing.Status.ACTIVE,
+            title="Contended listing",
+            price=Decimal("1"),
+            price_unit=Listing.PriceUnit.DAY,
+        )
+        self.url = f"/api/v1/listings/{self.listing.public_id}/images"
+        self.token = create_access_token(owner.public_id)
+
+    def _upload(self, _n):
+        try:
+            return Client().post(
+                self.url,
+                data={"file": SimpleUploadedFile("p.png", PNG_BYTES, "image/png")},
+                HTTP_AUTHORIZATION=f"Bearer {self.token}",
+            ).status_code
+        finally:
+            # Each thread opens its own connection; leaving them behind makes
+            # the post-test database teardown hang on the open handles.
+            connection.close()
+
+    def test_simultaneous_uploads_hold_every_image_invariant(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            codes = list(pool.map(self._upload, range(8)))
+
+        images = ListingImage.objects.filter(listing=self.listing)
+        sort_orders = list(images.values_list("sort_order", flat=True))
+
+        self.assertNotIn(500, codes)
+        self.assertLessEqual(images.count(), 3, "the cap was exceeded")
+        self.assertEqual(images.filter(is_primary=True).count(), 1)
+        self.assertEqual(
+            len(set(sort_orders)), len(sort_orders), "duplicate sort_order"
         )

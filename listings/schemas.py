@@ -124,23 +124,39 @@ class ListingOut(Schema):
         return {"name": org.name, "region": org.region, "is_verified": org.is_verified}
 
 
+# Column widths, restated here so pydantic refuses an over-long value before
+# it reaches the database. Django does not enforce `max_length` on save, so
+# without these Postgres raises DataError — which is neither an IntegrityError
+# nor something `_integrity_error` can translate, and the caller gets a 500
+# where they should get a 422.
+TITLE_MAX = 255
+CURRENCY_LEN = 3
+AVAILABILITY_MAX = 255
+DISTRICT_MAX = 120
+
+
 class ListingCreateIn(Schema):
     asset_id: UUID
     listing_type: Listing.ListingType
-    title: str
-    price: Decimal
+    title: str = Field(max_length=TITLE_MAX)
+    # `ge=0` mirrors the listing_price_non_negative constraint, the way
+    # equipment.schemas states its own bounds on the schema: the database is
+    # the guarantee, this is the readable error.
+    price: Decimal = Field(ge=0)
     price_unit: Listing.PriceUnit
-    currency: str = "UZS"
+    currency: str = Field(default="UZS", min_length=CURRENCY_LEN, max_length=CURRENCY_LEN)
     description: str = ""
-    availability: str = ""
+    availability: str = Field(default="", max_length=AVAILABILITY_MAX)
     has_operator: bool = False
     has_delivery: bool = False
     # Defaults to the organization's own region when omitted.
     region_id: UUID | None = None
-    district: str = ""
+    district: str = Field(default="", max_length=DISTRICT_MAX)
     # Only these two: `paused` and `archived` describe a listing that was once
-    # live, and nothing is served by letting one be born there.
-    status: str = Listing.Status.DRAFT
+    # live, and nothing is served by letting one be born there. Typed as the
+    # enum so an unknown value is a 422 listing the valid choices, rather than
+    # reaching the view's own check.
+    status: Listing.Status = Listing.Status.DRAFT
 
 
 class ListingUpdateIn(Schema):
@@ -149,19 +165,32 @@ class ListingUpdateIn(Schema):
     so every field is optional and none carries a default that could
     overwrite a value the caller never mentioned.
 
+    `None` here means "not sent", not "set to null": every column below except
+    `region` is NOT NULL, so an explicitly-sent `null` would reach the database
+    and fail there. `NULLABLE_UPDATE_FIELDS` records the one field for which a
+    null *is* meaningful, and the view rejects a null anywhere else.
+
     `asset_id` is absent on purpose: re-pointing a listing at a different
     machine is a different offer, and the same-org and one-active-per-asset
     invariants are checked at creation. Archive it and make a new one.
     """
 
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=TITLE_MAX)
     description: str | None = None
-    availability: str | None = None
-    price: Decimal | None = None
+    availability: str | None = Field(default=None, max_length=AVAILABILITY_MAX)
+    price: Decimal | None = Field(default=None, ge=0)
     price_unit: Listing.PriceUnit | None = None
-    currency: str | None = None
+    currency: str | None = Field(
+        default=None, min_length=CURRENCY_LEN, max_length=CURRENCY_LEN
+    )
     has_operator: bool | None = None
     has_delivery: bool | None = None
     region_id: UUID | None = None
-    district: str | None = None
+    district: str | None = Field(default=None, max_length=DISTRICT_MAX)
     status: Listing.Status | None = None
+
+
+# The only key of `ListingUpdateIn` whose `null` is a value rather than an
+# omission: clearing a listing's region is a legitimate edit, and `region` is
+# the one nullable column among them.
+NULLABLE_UPDATE_FIELDS = frozenset({"region_id"})

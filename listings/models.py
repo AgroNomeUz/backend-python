@@ -163,6 +163,17 @@ class Listing(PublicIdModel):
                     "be priced as a total."
                 ),
             ),
+            # `price` carries MinValueValidator(0), but a validator only runs
+            # under full_clean(), which no write path calls — so until this
+            # constraint existed a negative price saved happily and then sorted
+            # to the top of the public feed under `sort=price_asc`. Stated in
+            # the database for the same reason as the two above: it is the only
+            # place a view cannot forget it.
+            models.CheckConstraint(
+                condition=models.Q(price__gte=0),
+                name="listing_price_non_negative",
+                violation_error_message="A price cannot be negative.",
+            ),
         ]
 
     def __str__(self) -> str:
