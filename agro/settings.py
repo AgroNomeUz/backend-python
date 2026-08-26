@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'farms.apps.FarmsConfig',
     'equipment.apps.EquipmentConfig',
     'listings.apps.ListingsConfig',
+    'inquiries.apps.InquiriesConfig',
 ]
 
 MIDDLEWARE = [

@@ -174,6 +174,15 @@ class Listing(PublicIdModel):
                 name="listing_price_non_negative",
                 violation_error_message="A price cannot be negative.",
             ),
+            # Nothing in this app needs it: it exists so another table can
+            # reference the pair with a composite foreign key, the way
+            # `asset_id_org_unique` in equipment/0008 lets *this* table do it.
+            # `inquiries.Inquiry` denormalises `provider_organization` off the
+            # listing and is kept honest by exactly that.
+            models.UniqueConstraint(
+                fields=["id", "organization"],
+                name="listing_id_org_unique",
+            ),
         ]
 
     def __str__(self) -> str:

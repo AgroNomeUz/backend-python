@@ -23,6 +23,7 @@ class OrgPermission(models.TextChoices):
 
     MANAGE_EQUIPMENT = "equipment.manage", "Manage equipment"
     MANAGE_USERS = "users.manage", "Manage users"
+    MANAGE_INQUIRIES = "inquiries.manage", "Manage inquiries"
 
 
 class User(PublicIdModel, AbstractUser):
