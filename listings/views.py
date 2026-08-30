@@ -106,6 +106,23 @@ IMAGE_SIGNATURES = (
 
 # ── querysets ─────────────────────────────────────────────────────────────────
 
+# Everything ListingOut serialises. Named rather than inlined below because
+# `favorites` renders the same schema one relation deeper and has to join the
+# identical set under a `listing__` prefix — one list, so a field added to
+# ListingOut cannot be joined here and forgotten there.
+LISTING_SELECT_RELATED = (
+    "organization",
+    "organization__region",
+    "region",
+    "asset",
+    "asset__equipment_model",
+    "asset__equipment_model__manufacturer",
+    "asset__equipment_model__category",
+    "asset__equipment_model__category__parent",
+)
+LISTING_PREFETCH_RELATED = ("images",)
+
+
 def _listing_relations(queryset):
     """
     Everything ListingOut serialises, joined up front.
@@ -114,16 +131,9 @@ def _listing_relations(queryset):
     SynchronousOnlyOperation at serialisation time — so this is correctness,
     not just an N+1 guard.
     """
-    return queryset.select_related(
-        "organization",
-        "organization__region",
-        "region",
-        "asset",
-        "asset__equipment_model",
-        "asset__equipment_model__manufacturer",
-        "asset__equipment_model__category",
-        "asset__equipment_model__category__parent",
-    ).prefetch_related("images")
+    return queryset.select_related(*LISTING_SELECT_RELATED).prefetch_related(
+        *LISTING_PREFETCH_RELATED
+    )
 
 
 def published_listings():

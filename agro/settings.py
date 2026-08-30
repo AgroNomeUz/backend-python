@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'equipment.apps.EquipmentConfig',
     'listings.apps.ListingsConfig',
     'inquiries.apps.InquiriesConfig',
+    'favorites.apps.FavoritesConfig',
 ]
 
 MIDDLEWARE = [
