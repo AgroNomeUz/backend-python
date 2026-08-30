@@ -25,6 +25,7 @@ from ninja.errors import HttpError
 from core.audit import diff, request_context, snapshot
 from core.models import ActivityLog
 from equipment.views import activity_router, assets_router, catalog_router
+from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
 from users.models import OrgPermission, Organization, Region, User
@@ -67,6 +68,7 @@ api.add_router("/activity", activity_router)
 api.add_router("/members", members_router)
 api.add_router("/listings", listings_router)
 api.add_router("/inquiries", inquiries_router)
+api.add_router("/favorites", favorites_router)
 api.add_router("/regions", regions_router)
 # Deprecated. `/public/listings` and `/public/regions` predate the Listing
 # model and still answer with their original, asset-rooted payloads so the
