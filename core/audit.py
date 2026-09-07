@@ -9,6 +9,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_ipv46_address
+
 
 def to_jsonable(value):
     """Coerce ORM field values into something JSONField can store."""
@@ -71,3 +74,24 @@ def log_activity(request, organization, action, target, changes=None) -> None:
         changes=changes,
         context=request_context(request),
     )
+
+
+def client_ip(request) -> str | None:
+    """
+    The caller's address, or None if it isn't one.
+
+    `X-Forwarded-For` is client-controlled and `PhoneOtp.ip` is a Postgres
+    `inet` column — an unvalidated header would turn a junk value into a 500
+    rather than a rate-limit entry.
+
+    Lives next to `request_context`, whose `ip` key it re-reads, rather than in
+    the view module that first needed it: both `/auth/otp/request` and
+    `/users/me/phone` rate-limit per address, and they sit on opposite sides of
+    the api ↔ users import edge.
+    """
+    ip = (request_context(request) or {}).get("ip")
+    try:
+        validate_ipv46_address(ip)
+    except (ValidationError, TypeError):
+        return None
+    return ip

@@ -148,10 +148,18 @@ def protect_owner(member: User, reason: str) -> None:
         raise HttpError(403, reason)
 
 
-def protect_self(request, member: User, action: str) -> None:
-    """Guard against an admin editing their own standing."""
+def protect_self(request, member: User, action: str, hint: str | None = None) -> None:
+    """
+    Guard against an admin editing their own standing.
+
+    `hint`, when given, names the supported alternative route for callers
+    who hit this from a legitimate self-service need (e.g. their own phone).
+    """
     if member.pk == request.auth.pk:
-        raise HttpError(400, f"You cannot {action} your own account")
+        message = f"You cannot {action} your own account"
+        if hint:
+            message += f" — use {hint} instead"
+        raise HttpError(400, message)
 
 
 # ── roster ────────────────────────────────────────────────────────────────────
@@ -263,6 +271,18 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
         return member
 
     if "phone" in fields:
+        # The owner's number is the one credential staff must not be able to
+        # move: phone is the OTP login identifier, so rewriting it to a number
+        # you control is a takeover of the account that outranks you. Editing
+        # an ordinary member's is not an escalation — their password can
+        # already be reset from here.
+        # Self first, so the owner editing their own number is told where the
+        # verified path is rather than being called "staff". Like every other
+        # self-write of standing in this module (permissions, is_active,
+        # reset-password), nobody moves their own credential from here — that
+        # goes through the OTP-verified flow, not a plain PATCH.
+        protect_self(request, member, "change the phone number of", hint="/users/me/phone")
+        protect_owner(member, "The organization owner's phone cannot be changed by staff")
         fields["phone"] = normalize_phone(fields["phone"])
         check_phone_available(fields["phone"], exclude=member)
     if "permissions" in fields:
