@@ -23,7 +23,8 @@ from ninja.errors import HttpError
 
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
-from equipment.views import activity_router, assets_router, catalog_router
+from core.views import activity_router
+from equipment.views import assets_router, catalog_router
 from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
