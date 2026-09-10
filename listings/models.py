@@ -243,3 +243,105 @@ class ListingImage(PublicIdModel):
 
     def __str__(self) -> str:
         return f"{self.listing_id} / {self.file.name}"
+
+
+def active_listing_q(prefix: str = "") -> models.Q:
+    """
+    The public-feed intersection §0.5 defines — an active offer on an
+    available machine — as a `Q` reachable from anywhere.
+
+    `prefix` is the path to `Listing` from whatever is being counted, so a
+    region says `active_listing_q("listings__")` and an equipment category
+    says `active_listing_q("equipment_models__assets__listings__")`. It exists
+    because the intersection is now needed in four places — the feed,
+    `/regions`, `/stats/landing` and the owner dashboard — and half of them
+    reach it through a `Count(filter=...)` rather than a queryset, which is
+    how the counts drifted apart from the feed in the first place (§7).
+    """
+    return models.Q(
+        **{
+            f"{prefix}status": Listing.Status.ACTIVE,
+            f"{prefix}asset__operational_status": Asset.OperationalStatus.AVAILABLE,
+        }
+    )
+
+
+def active_listings():
+    """
+    Every listing currently on the market.
+
+    `published_listings()` in `listings/views.py` is this queryset plus the
+    joins `ListingOut` serialises; anything that only counts rows wants this
+    one.
+    """
+    return Listing.objects.filter(active_listing_q())
+
+
+class ListingView(PublicIdModel):
+    """
+    One viewer looking at one listing, on one day.
+
+    §7 asks the owner dashboard for a views KPI and notes that nothing tracked
+    them. This is that counter, as an event row rather than an integer column
+    on `Listing`, because the dashboard question is "how much interest this
+    week?" and a bare total cannot be windowed after the fact.
+
+    **A day, not a request.** The unique constraint collapses one viewer's
+    repeat visits to a single row per listing per day, so the number is daily
+    unique viewers rather than page loads. That is the more honest reading of
+    "views" — a seller refreshing their own page, or a buyer comparing two
+    machines back and forth, is one interested party either way — and it also
+    bounds a table that an anonymous endpoint writes to.
+
+    **`viewer_key` is a hash, not an identity.** For a logged-in reader it is
+    derived from their user id, for a stranger from address and user agent;
+    either way it is salted with `SECRET_KEY` and one-way, so the table can
+    tell two viewers apart without storing who they were. Nothing reads it
+    back — it exists only to be compared against itself.
+
+    Org-owned per §0.1 (`organization` denormalised off the listing, kept in
+    step by a composite foreign key, exactly as `Inquiry.provider_organization`
+    is), and deliberately **not** audited: an ActivityLog row is who *changed*
+    something in the organization, and a stranger reading a public page is
+    neither a member nor a change.
+    """
+
+    listing = models.ForeignKey(
+        Listing, on_delete=models.CASCADE, related_name="views"
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="listing_views",
+        help_text="The organization that owns the listing, for the dashboard query",
+    )
+
+    viewer_key = models.CharField(
+        max_length=64,
+        help_text="Salted hash of the viewer, for de-duplication only",
+    )
+    # Stored rather than derived from `created_at` because it is a column in
+    # the unique constraint, and a CHECK cannot call date().
+    viewed_on = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Listing view"
+        verbose_name_plural = "Listing views"
+        indexes = [
+            # The dashboard: this org's views, over a window of days.
+            models.Index(
+                fields=["organization", "viewed_on"], name="listing_view_org_day_idx"
+            ),
+        ]
+        constraints = [
+            # Also the index for a single listing's counts — `listing` leads it.
+            models.UniqueConstraint(
+                fields=["listing", "viewer_key", "viewed_on"],
+                name="listing_view_once_per_viewer_day",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.listing_id} on {self.viewed_on}"

@@ -14,12 +14,11 @@ where the old endpoint counts available assets.
 """
 
 from asgiref.sync import sync_to_async
-from django.db.models import Count, Q
+from django.db.models import Count
 from django.http import Http404
 from ninja import Router
 
-from equipment.models import Asset
-from listings.models import Listing
+from listings.models import active_listing_q, active_listings
 from users.models import Region
 
 from .public_schemas import RegionDetailOut
@@ -28,14 +27,6 @@ regions_router = Router(tags=["Regions"], auth=None)
 
 # How many categories a region's `popular_equipment` lists.
 POPULAR_EQUIPMENT_LIMIT = 5
-
-
-def _active_listings():
-    """The same intersection the public feed uses (§0.5)."""
-    return Listing.objects.filter(
-        status=Listing.Status.ACTIVE,
-        asset__operational_status=Asset.OperationalStatus.AVAILABLE,
-    )
 
 
 def _regions_with_counts(**filters) -> list[Region]:
@@ -51,12 +42,7 @@ def _regions_with_counts(**filters) -> list[Region]:
         Region.objects.filter(**filters)
         .annotate(
             listing_count=Count(
-                "listings",
-                filter=Q(
-                    listings__status=Listing.Status.ACTIVE,
-                    listings__asset__operational_status=Asset.OperationalStatus.AVAILABLE,
-                ),
-                distinct=True,
+                "listings", filter=active_listing_q("listings__"), distinct=True
             )
         )
         .order_by("name")
@@ -76,7 +62,7 @@ def _popular_equipment_by_region(region_pks: list[int]) -> dict[int, list[dict]]
     categories first, capped at POPULAR_EQUIPMENT_LIMIT.
     """
     rows = (
-        _active_listings()
+        active_listings()
         .filter(region_id__in=region_pks)
         .exclude(asset__equipment_model__category__isnull=True)
         .values("region_id", "asset__equipment_model__category__slug")
