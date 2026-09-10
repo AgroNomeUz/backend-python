@@ -22,7 +22,7 @@ from django.test import Client, TestCase, TransactionTestCase, override_settings
 from api.auth import create_access_token
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
-from listings.models import Listing, ListingImage
+from listings.models import Listing, ListingImage, ListingView
 from users.models import OrgPermission, Organization, Region, User
 
 # A real, minimal PNG — the upload endpoint sniffs the leading bytes, so a
@@ -388,6 +388,96 @@ class ListingDetailTests(ListingTestCase):
             HTTP_AUTHORIZATION="Bearer not-a-token",
         )
         self.assertEqual(response.status_code, 200)
+
+
+class ListingViewCounterTests(ListingTestCase):
+    """
+    The views counter §7's owner dashboard is built on.
+
+    It is written here, on the detail endpoint, because that is the only place
+    a listing is read one at a time — so the rules that matter are *whose*
+    reads count, and how often the same reader may count.
+    """
+
+    def test_a_stranger_reading_a_listing_is_counted(self):
+        listing = self.make_listing()
+        self.client.get(f"/api/v1/listings/{listing.public_id}")
+        self.assertEqual(ListingView.objects.filter(listing=listing).count(), 1)
+
+    def test_the_row_is_owned_by_the_listings_organization(self):
+        """Not by the viewer's — the dashboard reading it is the seller's."""
+        listing = self.make_listing()
+        self.client.get(
+            f"/api/v1/listings/{listing.public_id}", **auth(self.rival_owner)
+        )
+        view = ListingView.objects.get(listing=listing)
+        self.assertEqual(view.organization_id, self.org.pk)
+
+    def test_the_same_reader_counts_once_a_day(self):
+        listing = self.make_listing()
+        for _ in range(3):
+            self.client.get(f"/api/v1/listings/{listing.public_id}")
+        self.assertEqual(ListingView.objects.filter(listing=listing).count(), 1)
+
+    def test_two_different_readers_count_twice(self):
+        listing = self.make_listing()
+        self.client.get(
+            f"/api/v1/listings/{listing.public_id}", **auth(self.rival_owner)
+        )
+        self.client.get(
+            f"/api/v1/listings/{listing.public_id}",
+            HTTP_USER_AGENT="something-else/1.0",
+        )
+        self.assertEqual(ListingView.objects.filter(listing=listing).count(), 2)
+
+    def test_the_owning_org_does_not_count_as_interest(self):
+        """A seller opening their own offer to edit it is not a view."""
+        listing = self.make_listing()
+        for user in (self.owner, self.member):
+            self.client.get(f"/api/v1/listings/{listing.public_id}", **auth(user))
+        self.assertEqual(ListingView.objects.filter(listing=listing).count(), 0)
+
+    def test_a_draft_preview_is_not_counted(self):
+        """Only what is actually on the market (§0.5)."""
+        listing = self.make_listing(status=Listing.Status.DRAFT)
+        response = self.client.get(
+            f"/api/v1/listings/{listing.public_id}", **auth(self.member)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ListingView.objects.filter(listing=listing).count(), 0)
+
+    def test_the_feed_does_not_count_as_views(self):
+        """Appearing in a list of twenty is not someone looking at a machine."""
+        self.make_listing()
+        self.client.get("/api/v1/listings")
+        self.assertEqual(ListingView.objects.count(), 0)
+
+    def test_the_key_is_not_the_address_in_plain_text(self):
+        """
+        `viewer_key` is a de-duplication handle, not a record of who was here.
+        A hash that could be reversed by looking at it would make this table a
+        log of anonymous readers' addresses, which is not what it is for.
+        """
+        listing = self.make_listing()
+        self.client.get(f"/api/v1/listings/{listing.public_id}", REMOTE_ADDR="10.1.2.3")
+        key = ListingView.objects.get(listing=listing).viewer_key
+        self.assertNotIn("10.1.2.3", key)
+        self.assertEqual(len(key), 64)
+
+    def test_a_view_cannot_be_written_against_the_wrong_organization(self):
+        """
+        The composite foreign key from `listings/0004`, checked the way the
+        other invariants are: through the ORM, where a view's mistake would
+        land.
+        """
+        listing = self.make_listing()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ListingView.objects.create(
+                listing=listing,
+                organization=self.rival_org,
+                viewer_key="x" * 64,
+                viewed_on="2026-09-09",
+            )
 
 
 class ListingWriteTests(ListingTestCase):

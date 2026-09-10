@@ -150,6 +150,15 @@ class RegionOrdersOut(Schema):
 
 
 class PublicStatsOut(Schema):
+    """
+    The payload of the deprecated `GET /public/stats`.
+
+    Frozen, like `PublicRegionListingsOut` above and for the same reason: its
+    listing-shaped numbers count *available assets*, and the deployed frontend
+    parses them. `api/stats_schemas.LandingStatsOut` is the canonical
+    replacement — the same fields, counted off `Listing`.
+    """
+
     total_active_listings: int
     total_equipment: int
     total_owner_organizations: int

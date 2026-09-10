@@ -45,6 +45,7 @@ from .models import RefreshToken
 from .otp import OtpInvalid, OtpThrottled, claim_signup_otp, issue_otp, verify_otp
 from .public import public_router
 from .regions import regions_router
+from .stats import stats_router
 from .schemas import (
     AuthOut,
     LoginIn,
@@ -72,10 +73,12 @@ api.add_router("/listings", listings_router)
 api.add_router("/inquiries", inquiries_router)
 api.add_router("/favorites", favorites_router)
 api.add_router("/regions", regions_router)
-# Deprecated. `/public/listings` and `/public/regions` predate the Listing
-# model and still answer with their original, asset-rooted payloads so the
-# deployed frontend keeps working; `/listings` and `/regions` above are the
-# canonical replacements. `/public/stats` is not deprecated.
+api.add_router("/stats", stats_router)
+# Deprecated, all three. `/public/listings`, `/public/regions` and
+# `/public/stats` predate the Listing model and still answer with their
+# original, asset-rooted payloads so the deployed frontend keeps working;
+# `/listings`, `/regions` and `/stats/landing` above are the canonical
+# replacements, and they count listings.
 api.add_router("/public", public_router)
 
 
