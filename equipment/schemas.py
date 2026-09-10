@@ -187,28 +187,3 @@ class AssetOut(Schema):
         if obj.current_location is None:
             return None
         return {"latitude": obj.current_location.y, "longitude": obj.current_location.x}
-
-
-# ── Activity log ──────────────────────────────────────────────────────────────
-
-class ActivityLogOut(Schema):
-    id: UUID = Field(alias="public_id")
-    action: str
-    actor_id: UUID | None = None
-    actor_username: str | None = None
-    target_type: str | None = None
-    target_repr: str
-    changes: dict = {}
-    created_at: datetime
-
-    @staticmethod
-    def resolve_actor_id(obj) -> UUID | None:
-        return obj.actor.public_id if obj.actor_id else None
-
-    @staticmethod
-    def resolve_actor_username(obj) -> str | None:
-        return obj.actor.username if obj.actor_id else None
-
-    @staticmethod
-    def resolve_target_type(obj) -> str | None:
-        return obj.content_type.model if obj.content_type_id else None
