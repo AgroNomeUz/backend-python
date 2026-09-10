@@ -37,6 +37,8 @@ from ninja.pagination import LimitOffsetPagination, paginate
 
 from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
+from core.schemas import ActivityLogOut
+from core.views import org_activity
 from users.models import OrgPermission, Organization
 from users.permissions import caller_organization, require_perm
 
@@ -47,7 +49,6 @@ from .models import (
     Manufacturer,
 )
 from .schemas import (
-    ActivityLogOut,
     AssetIn,
     AssetOut,
     AssetUpdateIn,
@@ -60,9 +61,6 @@ from .schemas import (
 
 catalog_router = Router(tags=["Catalog"], auth=None)
 assets_router = Router(tags=["Assets"])
-activity_router = Router(tags=["Activity"])
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def writable_organization(request) -> Organization:
@@ -432,31 +430,20 @@ def _point(location) -> Point | None:
 @assets_router.get("/{asset_id}/activity", response=list[ActivityLogOut])
 @paginate(LimitOffsetPagination)
 async def asset_activity(request, asset_id: UUID):
-    """Everything that ever happened to one asset, newest first."""
+    """
+    Everything that ever happened to one asset, newest first.
+
+    The same rows `GET /activity?target_type=asset&target_id={id}` returns,
+    with one difference worth the second endpoint: the asset is resolved
+    through the caller's own fleet first, so an id belonging to another
+    organization is a 404 here rather than an empty page (§0.1). Both answers
+    are correct; this one is the better one when the client already knows it
+    is looking at one of its own machines.
+    """
     organization = caller_organization(request)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
-    return _org_activity(organization).filter(
+    return org_activity(organization).filter(
         content_type__model="asset", object_id=asset.pk
     )
 
 
-@activity_router.get("", response=list[ActivityLogOut])
-@paginate(LimitOffsetPagination)
-async def list_activity(
-    request,
-    action: str | None = None,
-    target_type: str | None = None,
-):
-    """The organization's full change history, newest first."""
-    qs = _org_activity(caller_organization(request))
-    if action:
-        qs = qs.filter(action=action)
-    if target_type:
-        qs = qs.filter(content_type__model=target_type)
-    return qs
-
-
-def _org_activity(organization: Organization):
-    return ActivityLog.objects.filter(organization=organization).select_related(
-        "actor", "content_type"
-    )

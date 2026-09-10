@@ -40,6 +40,8 @@ from ninja.pagination import LimitOffsetPagination, paginate
 from api.models import RefreshToken
 from core.audit import diff, request_context, snapshot
 from core.models import ActivityLog
+from core.schemas import ActivityLogOut
+from core.views import org_activity
 
 from .models import OrgPermission, Organization, User
 from .permissions import caller_organization, normalize_permissions, require_perm
@@ -262,6 +264,32 @@ async def create_member(request, data: MemberCreateIn):
 @members_router.get("/{member_id}", response=MemberOut)
 async def get_member(request, member_id: UUID):
     return await member_or_404(caller_organization(request), member_id)
+
+
+@members_router.get("/{member_id}/activity", response=list[ActivityLogOut])
+@paginate(LimitOffsetPagination)
+async def member_activity(request, member_id: UUID):
+    """
+    What this member has **done**, newest first.
+
+    Actor, not target — and that is the difference from
+    `/assets/{id}/activity`, which is the history *of* an object. An asset
+    cannot act; a member is the only kind of target in the system that is
+    also an actor, so the path has to pick one, and "what has Alisher been
+    doing?" is the question an admin actually opens a person's page to ask.
+
+    The other reading stays available and needs no endpoint of its own:
+    `GET /activity?target_type=user&target_id={id}` is everything that was
+    done *to* this account — permissions granted, password reset,
+    deactivation.
+
+    Readable by any member of the organization (§8), and scoped to the
+    caller's own roster, so a member id from elsewhere is a 404 rather than
+    an empty page.
+    """
+    organization = caller_organization(request)
+    member = await member_or_404(organization, member_id)
+    return org_activity(organization).filter(actor=member)
 
 
 def _apply_update_member(request, organization, member: User, data: MemberUpdateIn) -> User:
