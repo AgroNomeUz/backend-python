@@ -3,6 +3,12 @@ api/public.py
 Token-free endpoints for the public marketing site: real equipment offers,
 regional coverage and headline platform numbers.
 
+**Frozen and deprecated, all three.** `/listings`, `/regions` and
+`/stats/landing` are the canonical replacements; everything here predates the
+`Listing` model and answers with the asset-rooted payloads the deployed
+frontend still parses. Nothing in this module should change again except to
+be deleted.
+
 `public_router` is mounted with auth=None, which overrides the API-wide
 JWTBearer default (see api/views.py) — nothing here needs a bearer token, and
 nothing here should ever return data that requires one. Equipment listings
@@ -15,33 +21,18 @@ from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from django.core.cache import cache
-from django.db.models import (
-    Avg,
-    Count,
-    DurationField,
-    ExpressionWrapper,
-    F,
-    OuterRef,
-    Prefetch,
-    Q,
-    Subquery,
-)
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import aget_object_or_404
 from django.utils import timezone
 from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
 
-from equipment.models import (
-    Asset,
-    Booking,
-    BookingStatusHistory,
-    EquipmentCategory,
-    PricingRule,
-)
+from equipment.models import Asset, Booking, EquipmentCategory, PricingRule
 from equipment.views import _category_q, _size_class_filter
 from users.models import Organization, Region, User
 
 from .public_schemas import PublicListingOut, PublicRegionListingsOut, PublicStatsOut
+from .stats import average_owner_response_minutes
 
 public_router = Router(tags=["Public"], auth=None)
 
@@ -155,12 +146,16 @@ STATS_CACHE_KEY = "public:stats"
 STATS_CACHE_SECONDS = 300
 
 
-@public_router.get("/stats", response=PublicStatsOut)
+@public_router.get("/stats", response=PublicStatsOut, deprecated=True)
 async def public_stats(request):
     """
-    Headline numbers for the landing page. The payload touches most tables in
-    the schema, so it's cached for a few minutes rather than computed fresh
-    on every hit.
+    Headline numbers for the landing page — **superseded by
+    `GET /stats/landing`** (§7), which returns the same fields counted off
+    `Listing` rather than off available assets. Kept, unchanged, because it is
+    what the deployed frontend parses today.
+
+    The payload touches most tables in the schema, so it's cached for a few
+    minutes rather than computed fresh on every hit.
 
     Spelled out rather than using `cache.aget_or_set`, because the default it
     takes is a *sync* callable: `_compute_public_stats` runs a dozen ORM
@@ -227,39 +222,8 @@ def _compute_public_stats() -> dict:
         "new_listings_last_30_days": Asset.objects.filter(
             created_at__gte=now - timedelta(days=30)
         ).count(),
-        "average_owner_response_minutes": _average_owner_response_minutes(),
+        # The one number here that §7 did not ask to re-root, so the two
+        # endpoints share the implementation rather than each keeping a copy
+        # free to drift.
+        "average_owner_response_minutes": average_owner_response_minutes(),
     }
-
-
-def _average_owner_response_minutes() -> float | None:
-    """
-    Mean time between a booking entering 'requested' and the provider moving
-    it to 'confirmed' or 'rejected', read off the status history Booking
-    already writes on every transition (see Booking.transition_to). A booking
-    can only pass through 'requested' once — REQUESTED never re-appears as a
-    target in ALLOWED_TRANSITIONS — so there's at most one match per side.
-    """
-    requested_at = (
-        BookingStatusHistory.objects.filter(
-            booking=OuterRef("booking"), to_status=Booking.Status.REQUESTED
-        )
-        .order_by("changed_at")
-        .values("changed_at")[:1]
-    )
-    responses = (
-        BookingStatusHistory.objects.filter(
-            from_status=Booking.Status.REQUESTED,
-            to_status__in=[Booking.Status.CONFIRMED, Booking.Status.REJECTED],
-        )
-        .annotate(requested_at=Subquery(requested_at))
-        .exclude(requested_at__isnull=True)
-        .annotate(
-            wait=ExpressionWrapper(
-                F("changed_at") - F("requested_at"), output_field=DurationField()
-            )
-        )
-    )
-    average_wait = responses.aggregate(value=Avg("wait"))["value"]
-    if average_wait is None:
-        return None
-    return round(average_wait.total_seconds() / 60, 1)

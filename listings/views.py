@@ -25,28 +25,30 @@ the reason equipment/views.py sets out — Django has no async
 together.
 """
 
+import logging
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import aget_object_or_404, get_object_or_404
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 from ninja import File, Router
 from ninja.errors import HttpError
 from ninja.files import UploadedFile
 from ninja.pagination import LimitOffsetPagination, paginate
 
 from api.auth import OptionalJWTBearer, authenticated_user
-from core.audit import diff, log_activity, snapshot
+from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
 from equipment.models import Asset
 from equipment.views import _category_q, _size_class_filter, writable_organization
 from users.models import Organization, Region
 from users.permissions import caller_organization
 
-from .models import IMAGE_EXTENSIONS, Listing, ListingImage
+from .models import IMAGE_EXTENSIONS, Listing, ListingImage, ListingView, active_listings
 from .schemas import (
     NULLABLE_UPDATE_FIELDS,
     ListingCreateIn,
@@ -56,6 +58,8 @@ from .schemas import (
 )
 
 listings_router = Router(tags=["Listings"])
+
+logger = logging.getLogger(__name__)
 
 # Fields whose changes are worth showing in an organization's history.
 LISTING_AUDIT_FIELDS = [
@@ -137,13 +141,14 @@ def _listing_relations(queryset):
 
 
 def published_listings():
-    """The public feed: an active offer on an available machine (§0.5)."""
-    return _listing_relations(
-        Listing.objects.filter(
-            status=Listing.Status.ACTIVE,
-            asset__operational_status=Asset.OperationalStatus.AVAILABLE,
-        )
-    )
+    """
+    The public feed: an active offer on an available machine (§0.5).
+
+    The filter itself lives on the model (`active_listings`) because /regions
+    and /stats count the same rows without needing any of these joins; this is
+    that queryset plus everything `ListingOut` serialises.
+    """
+    return _listing_relations(active_listings())
 
 
 def org_listings(organization: Organization):
@@ -379,6 +384,69 @@ async def create_listing(request, data: ListingCreateIn):
     return 201, listing
 
 
+# ── the views counter ─────────────────────────────────────────────────────────
+
+def viewer_key(request) -> str:
+    """
+    A stable, one-way handle for whoever is reading — the de-duplication key
+    for `ListingView`, and deliberately not an identity.
+
+    A logged-in reader is keyed by their user id so the same person counts
+    once whichever device they are on; a stranger by address and user agent,
+    which is the most any anonymous request offers. Both go through
+    `salted_hmac`, so what lands in the table cannot be read back into an IP
+    address — the counter needs to tell two viewers apart, and nothing more
+    than that.
+    """
+    user = authenticated_user(request)
+    if user is not None:
+        identity = f"user:{user.pk}"
+    else:
+        context = request_context(request)
+        identity = f"anon:{context['ip']}|{context['user_agent']}"
+    return salted_hmac(
+        "listings.ListingView.viewer_key", identity, algorithm="sha256"
+    ).hexdigest()
+
+
+def _record_listing_view(request, listing: Listing) -> None:
+    """
+    Count one view, at most once per viewer per listing per day.
+
+    `get_or_create` against `listing_view_once_per_viewer_day`, so two tabs
+    opened at once settle into one row rather than an error. A database
+    failure here is swallowed on purpose: this is a statistic riding along
+    with a public read, and it must never be the reason someone cannot see a
+    tractor.
+    """
+    try:
+        ListingView.objects.get_or_create(
+            listing=listing,
+            organization_id=listing.organization_id,
+            viewer_key=viewer_key(request),
+            viewed_on=timezone.localdate(),
+        )
+    except DatabaseError:
+        logger.warning("Could not record a view of listing %s", listing.pk, exc_info=True)
+
+
+def _counts_as_a_view(listing: Listing, user) -> bool:
+    """
+    Whose reads the dashboard should count.
+
+    Only a listing actually on the market (§0.5) — a member previewing their
+    own draft is not market interest — and never the owning organization
+    itself, whose staff open their own offers to edit them. Counting those
+    would make the KPI grow with how often a seller checks it, which is the
+    one thing a demand signal must not do.
+    """
+    if listing.status != Listing.Status.ACTIVE:
+        return False
+    if listing.asset.operational_status != Asset.OperationalStatus.AVAILABLE:
+        return False
+    return user is None or user.organization_id != listing.organization_id
+
+
 @listings_router.get("/{listing_id}", response=ListingOut, auth=OptionalJWTBearer())
 async def get_listing(request, listing_id: UUID):
     """
@@ -388,6 +456,10 @@ async def get_listing(request, listing_id: UUID):
     the machine is available, but the organization that owns it sees its own
     drafts and paused offers here too — otherwise the edit screen would have
     to read from a different endpoint than the public page it previews.
+
+    This is also where the views counter §7 needs is written, because it is
+    the only place a listing is read one at a time: appearing in a feed of
+    twenty is not someone looking at your machine.
     """
     user = authenticated_user(request)
     visible = Q(
@@ -397,9 +469,12 @@ async def get_listing(request, listing_id: UUID):
     if user is not None and user.organization_id:
         visible |= Q(organization_id=user.organization_id)
 
-    return await aget_object_or_404(
+    listing = await aget_object_or_404(
         _listing_relations(Listing.objects.filter(visible)), public_id=listing_id
     )
+    if _counts_as_a_view(listing, user):
+        await sync_to_async(_record_listing_view)(request, listing)
+    return listing
 
 
 def _apply_update_listing(request, organization, listing: Listing, data: ListingUpdateIn):
