@@ -20,7 +20,7 @@ from django.test import TestCase
 from api.auth import create_access_token
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
-from inquiries.models import Inquiry
+from inquiries.models import Inquiry, InquiryMessage
 from listings.models import Listing
 from users.models import OrgPermission, Organization, Region, User
 
@@ -125,6 +125,18 @@ class InquiryTestCase(TestCase):
         fields.update(overrides)
         return Inquiry.objects.create(**fields)
 
+    @staticmethod
+    def make_stranger_owner():
+        """A third organization, party to nothing — for the negative case."""
+        owner = User.objects.create_user(
+            username="stranger-owner", password="x", full_name="Stranger Owner"
+        )
+        region = Region.objects.create(name="Stranger Region", code="STR", soato="1799")
+        org = Organization.objects.create(name="Stranger Org", owner=owner, region=region)
+        owner.organization = org
+        owner.save(update_fields=["organization"])
+        return owner
+
 
 class InvariantTests(InquiryTestCase):
     """The three rules the database keeps, checked where they are kept."""
@@ -170,6 +182,36 @@ class InvariantTests(InquiryTestCase):
     def test_dates_are_optional_entirely(self):
         """A sale enquiry has no date range at all."""
         self.assertIsNone(self.make_inquiry().start_date)
+
+    def test_deleting_an_inquiry_cascades_its_messages(self):
+        inquiry = self.make_inquiry()
+        message = InquiryMessage.objects.create(
+            inquiry=inquiry,
+            sender_side=InquiryMessage.Side.RENTER,
+            created_by=self.buyer_owner,
+            body=inquiry.message,
+        )
+        inquiry.delete()
+        self.assertFalse(InquiryMessage.objects.filter(pk=message.pk).exists())
+
+    def test_deleting_the_author_leaves_the_message_standing(self):
+        """
+        `created_by` is `SET_NULL` — history survives an account being
+        deleted. A regular member, not the owner: `Organization.owner` is
+        `CASCADE`, so deleting the owner would take the org, the inquiry and
+        the message with it, and prove nothing about `SET_NULL`.
+        """
+        inquiry = self.make_inquiry()
+        message = InquiryMessage.objects.create(
+            inquiry=inquiry,
+            sender_side=InquiryMessage.Side.RENTER,
+            created_by=self.buyer_member,
+            body=inquiry.message,
+        )
+        self.buyer_member.delete()
+        message.refresh_from_db()
+        self.assertIsNone(message.created_by)
+        self.assertEqual(message.body, inquiry.message)
 
 
 class SendTests(InquiryTestCase):
@@ -441,3 +483,223 @@ class MarkReadTests(InquiryTestCase):
         inquiry is simply not in their inbox (§0.1).
         """
         self.assertEqual(self.mark_read(user=self.buyer_owner).status_code, 404)
+
+
+class InquiryDetailTests(InquiryTestCase):
+    """`GET /inquiries/{id}` — one inquiry, opened from either side."""
+
+    def setUp(self):
+        self.inquiry = self.make_inquiry()
+        self.stranger_owner = self.make_stranger_owner()
+
+    def get_inquiry(self, user, inquiry=None):
+        target = inquiry or self.inquiry
+        return self.client.get(f"/api/v1/inquiries/{target.public_id}", **auth(user))
+
+    def test_the_provider_can_open_it(self):
+        response = self.get_inquiry(self.seller_owner)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["id"], str(self.inquiry.public_id))
+
+    def test_the_sender_can_open_it(self):
+        self.assertEqual(self.get_inquiry(self.buyer_owner).status_code, 200)
+
+    def test_any_member_of_either_party_can_open_it(self):
+        """Reads are never permission-gated (§0.2)."""
+        self.assertEqual(self.get_inquiry(self.seller_member).status_code, 200)
+        self.assertEqual(self.get_inquiry(self.buyer_member).status_code, 200)
+
+    def test_a_third_organization_gets_a_404(self):
+        self.assertEqual(self.get_inquiry(self.stranger_owner).status_code, 404)
+
+    def test_the_provider_sees_who_handled_it_and_the_sender_sees_null(self):
+        self.inquiry.read_at = "2026-04-01T10:00:00Z"
+        self.inquiry.read_by = self.seller_member
+        self.inquiry.save(update_fields=["read_at", "read_by"])
+
+        provider_view = self.get_inquiry(self.seller_owner).json()
+        self.assertEqual(provider_view["handled_by"]["name"], "Seller Member")
+
+        # `null`, not absent: the sender is entitled to know a thread has been
+        # picked up, just never by whom (§5).
+        sender_view = self.get_inquiry(self.buyer_owner).json()
+        self.assertIn("handled_by", sender_view)
+        self.assertIsNone(sender_view["handled_by"])
+
+
+class ThreadReadTests(InquiryTestCase):
+    """`GET /inquiries/{id}/messages` — the transcript, oldest first."""
+
+    def post_inquiry(self, **overrides):
+        body = {
+            "listing_id": str(self.listing.public_id),
+            "message": "Is it free the first week of April?",
+        }
+        body.update(overrides)
+        return self.client.post(
+            "/api/v1/inquiries",
+            data=body,
+            content_type="application/json",
+            **auth(self.buyer_owner),
+        )
+
+    def get_messages(self, inquiry_id, user, **params):
+        return self.client.get(
+            f"/api/v1/inquiries/{inquiry_id}/messages", params, **auth(user)
+        )
+
+    def test_sending_an_inquiry_leaves_exactly_one_message(self):
+        response = self.post_inquiry()
+        inquiry_id = response.json()["id"]
+
+        payload = self.get_messages(inquiry_id, self.seller_owner).json()
+        self.assertEqual(payload["count"], 1)
+        message = payload["items"][0]
+        self.assertEqual(message["body"], "Is it free the first week of April?")
+        self.assertEqual(message["sender"]["organization_name"], "Buyer Org")
+        self.assertEqual(message["sender"]["user"]["name"], "Buyer Owner")
+
+    def test_the_opener_carries_the_inquirys_own_timestamp(self):
+        """
+        Not `auto_now_add`: the opener is stamped with `inquiry.created_at`,
+        not the moment the row was inserted — the two are the same instant
+        here, but the backfill migration relies on this not being hard-coded
+        to "now".
+        """
+        response = self.post_inquiry()
+        inquiry = Inquiry.objects.get(public_id=response.json()["id"])
+        message = InquiryMessage.objects.get(inquiry=inquiry)
+        self.assertEqual(message.created_at, inquiry.created_at)
+
+    def test_the_transcript_reads_oldest_first(self):
+        """The deliberate opposite of the newest-first inbox."""
+        inquiry = self.make_inquiry()
+        InquiryMessage.objects.create(
+            inquiry=inquiry, sender_side=InquiryMessage.Side.RENTER,
+            created_by=self.buyer_owner, body=inquiry.message, created_at=inquiry.created_at,
+        )
+        InquiryMessage.objects.create(
+            inquiry=inquiry, sender_side=InquiryMessage.Side.PROVIDER,
+            created_by=self.seller_owner, body="Yes, it is.",
+        )
+
+        payload = self.get_messages(inquiry.public_id, self.buyer_owner).json()
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["items"][0]["body"], inquiry.message)
+        self.assertEqual(payload["items"][1]["body"], "Yes, it is.")
+
+    def test_any_member_of_either_party_can_read_the_thread(self):
+        inquiry = self.make_inquiry()
+        InquiryMessage.objects.create(
+            inquiry=inquiry, sender_side=InquiryMessage.Side.RENTER,
+            created_by=self.buyer_owner, body=inquiry.message, created_at=inquiry.created_at,
+        )
+        self.assertEqual(
+            self.get_messages(inquiry.public_id, self.seller_member).status_code, 200
+        )
+        self.assertEqual(
+            self.get_messages(inquiry.public_id, self.buyer_member).status_code, 200
+        )
+
+    def test_a_third_organization_gets_a_404(self):
+        inquiry = self.make_inquiry()
+        stranger_owner = self.make_stranger_owner()
+        self.assertEqual(
+            self.get_messages(inquiry.public_id, stranger_owner).status_code, 404
+        )
+
+    def test_limit_and_offset_page_the_transcript(self):
+        inquiry = self.make_inquiry()
+        for index in range(3):
+            InquiryMessage.objects.create(
+                inquiry=inquiry, sender_side=InquiryMessage.Side.RENTER,
+                created_by=self.buyer_owner, body=f"Message {index}",
+            )
+        payload = self.get_messages(
+            inquiry.public_id, self.buyer_owner, limit=1, offset=1
+        ).json()
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["items"][0]["body"], "Message 1")
+
+
+class ThreadWriteTests(InquiryTestCase):
+    """`POST /inquiries/{id}/messages` — replying, from either side."""
+
+    def setUp(self):
+        self.inquiry = self.make_inquiry()
+
+    def reply(self, user, body="Yes, the first week works.", inquiry=None):
+        target = inquiry or self.inquiry
+        return self.client.post(
+            f"/api/v1/inquiries/{target.public_id}/messages",
+            data={"body": body},
+            content_type="application/json",
+            **auth(user),
+        )
+
+    def test_the_provider_can_reply_and_the_sender_sees_it(self):
+        response = self.reply(self.seller_owner)
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload["body"], "Yes, the first week works.")
+        self.assertEqual(payload["sender"]["organization_name"], "Seller Org")
+        self.assertEqual(
+            payload["sender"]["organization_id"], str(self.seller_org.public_id)
+        )
+
+        transcript = self.client.get(
+            f"/api/v1/inquiries/{self.inquiry.public_id}/messages",
+            **auth(self.buyer_owner),
+        ).json()
+        self.assertEqual(transcript["count"], 1)
+        self.assertEqual(transcript["items"][0]["body"], "Yes, the first week works.")
+
+    def test_the_sender_can_reply_too(self):
+        response = self.reply(self.buyer_owner, body="Any update?")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(
+            response.json()["sender"]["organization_name"], "Buyer Org"
+        )
+
+    def test_replying_requires_the_inquiries_permission(self):
+        self.assertEqual(self.reply(self.seller_member).status_code, 403)
+
+    def test_a_member_with_the_code_may_reply(self):
+        self.seller_member.permissions = [OrgPermission.MANAGE_INQUIRIES]
+        self.seller_member.save(update_fields=["permissions"])
+        self.assertEqual(self.reply(self.seller_member).status_code, 201)
+
+    def test_a_third_organization_gets_a_404(self):
+        stranger_owner = self.make_stranger_owner()
+        self.assertEqual(self.reply(stranger_owner).status_code, 404)
+
+    def test_an_empty_body_is_refused_by_the_schema(self):
+        self.assertEqual(self.reply(self.seller_owner, body="").status_code, 422)
+
+    def test_an_over_long_body_is_refused_by_the_schema(self):
+        self.assertEqual(self.reply(self.seller_owner, body="x" * 2001).status_code, 422)
+
+    def test_a_reply_is_logged_against_the_replying_organization(self):
+        """
+        §0.3's asymmetry, from the reply side: "we replied" in the seller's
+        history, and it is a `created` row on the message, not a
+        `status_changed` on the inquiry — `/stats/owner` counts the latter as
+        "handled", and a reply is neither that nor a second copy of `sent`.
+        """
+        self.reply(self.seller_owner)
+        entry = ActivityLog.objects.get(content_type__model="inquirymessage")
+        self.assertEqual(entry.organization, self.seller_org)
+        self.assertEqual(entry.actor, self.seller_owner)
+        self.assertEqual(entry.action, ActivityLog.Action.CREATED)
+        self.assertNotIn("body", entry.changes)
+        self.assertFalse(
+            ActivityLog.objects.filter(
+                content_type__model="inquiry", action=ActivityLog.Action.STATUS_CHANGED
+            ).exists()
+        )
+
+    def test_a_reply_does_not_mark_the_inquiry_read(self):
+        self.reply(self.seller_owner)
+        self.inquiry.refresh_from_db()
+        self.assertIsNone(self.inquiry.read_at)
+        self.assertIsNone(self.inquiry.read_by)

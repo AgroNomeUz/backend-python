@@ -24,6 +24,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
+from django.utils import timezone
 
 from core.models import PublicIdModel
 from listings.models import Listing
@@ -160,3 +161,73 @@ class Inquiry(PublicIdModel):
                     "An inquiry's provider must be the organization that owns "
                     "the listing."
                 )
+
+
+class InquiryMessage(PublicIdModel):
+    """
+    One turn in the conversation an `Inquiry` opened.
+
+    An inquiry has two parties, so "who sent this" cannot get the same
+    composite-foreign-key treatment `provider_organization` does above: that
+    pattern vouches for exactly one `(child, organization)` pair, and a
+    message's sender is legitimately either one. Storing which *side* sent it
+    instead makes "the sender is a party to this inquiry" true by
+    construction — `sender_organization` below simply reads it off the
+    inquiry, so there is no denormalised organization column to keep in step
+    and nothing for a view to get wrong.
+
+    `Inquiry.message` is untouched by this model: `POST /inquiries` writes the
+    opening `InquiryMessage` alongside it, in the same transaction, so a
+    thread always has at least one turn — but the column stays the one
+    everything already reading `Inquiry.message` has always used.
+    """
+
+    class Side(models.TextChoices):
+        RENTER = "renter", "Renter"
+        PROVIDER = "provider", "Provider"
+
+    inquiry = models.ForeignKey(
+        Inquiry, on_delete=models.CASCADE, related_name="messages"
+    )
+    sender_side = models.CharField(max_length=8, choices=Side.choices)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="inquiry_messages_created",
+        help_text="Member who sent it; null once the account is deleted",
+    )
+    body = models.TextField()
+
+    # `default=`, not `auto_now_add=`: the opening message is stamped with the
+    # inquiry's own `created_at` (see `_apply_create_inquiry`), and
+    # `auto_now_add` would silently overwrite that on every insert, including
+    # the migration that backfills one for every inquiry that predates this
+    # model.
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        # `id` breaks the tie: pagination slices this ordering, and a
+        # backfilled opener shares its `created_at` with the inquiry itself.
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["inquiry", "created_at"], name="inquiry_thread_idx"),
+        ]
+        # Not a constraint: "every inquiry has at least one message". A CHECK
+        # cannot span rows, and a trigger would fail the *delete* of the
+        # inquiry rather than the write that left it empty — the same
+        # reasoning that keeps "read_by is set iff read_at is" out of
+        # `Inquiry.Meta` above. It holds because `_apply_create_inquiry`
+        # writes the opener in the same transaction as the inquiry, and the
+        # migration that introduces this model backfills one for every row
+        # that predates it.
+
+    def __str__(self) -> str:
+        return f"{self.sender_organization} on {self.inquiry}"
+
+    @property
+    def sender_organization(self) -> Organization:
+        if self.sender_side == self.Side.PROVIDER:
+            return self.inquiry.provider_organization
+        return self.inquiry.customer_organization
