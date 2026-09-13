@@ -27,6 +27,7 @@ from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.shortcuts import aget_object_or_404, get_object_or_404
 from django.utils import timezone
 from ninja import Router
@@ -39,8 +40,15 @@ from listings.views import published_listings
 from users.models import OrgPermission, Organization
 from users.permissions import caller_organization, require_perm
 
-from .models import Inquiry
-from .schemas import InquiryCreateIn, InquiryInboxOut, InquiryOut
+from .models import Inquiry, InquiryMessage
+from .schemas import (
+    InquiryCreateIn,
+    InquiryDetailOut,
+    InquiryInboxOut,
+    InquiryMessageCreateIn,
+    InquiryMessageOut,
+    InquiryOut,
+)
 
 inquiries_router = Router(tags=["Inquiries"])
 
@@ -127,6 +135,37 @@ def sent_inquiries(organization: Organization):
     )
 
 
+def party_inquiries(organization: Organization):
+    """
+    Both folders at once — every inquiry this organization is a party to.
+
+    For `GET /inquiries/{id}` and the thread underneath it, where the caller
+    may be either side. `inquiry_not_to_own_org` guarantees an organization is
+    never both parties on the same row, so the `Q | Q` cannot double it up.
+    """
+    return _inquiry_relations(
+        Inquiry.objects.filter(
+            Q(provider_organization=organization) | Q(customer_organization=organization)
+        )
+    )
+
+
+def thread_messages(inquiry: Inquiry):
+    """
+    One inquiry's transcript, oldest first — a conversation reads top-down,
+    the deliberate opposite of the newest-first inbox.
+
+    The joins are correctness, not tuning: `InquiryMessageOut.resolve_sender`
+    walks `message.inquiry.{customer,provider}_organization`, and an async
+    view raises `SynchronousOnlyOperation` on a lazy relation at serialisation
+    time (the same reason `_inquiry_relations` above joins everything an
+    `Inquiry` schema touches).
+    """
+    return inquiry.messages.select_related(
+        "created_by", "inquiry__customer_organization", "inquiry__provider_organization"
+    )
+
+
 # ── sending ───────────────────────────────────────────────────────────────────
 
 def _apply_create_inquiry(request, organization, data: InquiryCreateIn) -> Inquiry:
@@ -163,7 +202,20 @@ def _apply_create_inquiry(request, organization, data: InquiryCreateIn) -> Inqui
         except IntegrityError as exc:
             raise _integrity_error(exc)
 
+        # The opening turn of the thread — same transaction, so a thread is
+        # never left empty by a failure between the two writes. `Inquiry.message`
+        # stays exactly as it is: this is a copy for the transcript, not a move.
+        InquiryMessage.objects.create(
+            inquiry=inquiry,
+            sender_side=InquiryMessage.Side.RENTER,
+            created_by=request.auth,
+            body=inquiry.message,
+            created_at=inquiry.created_at,
+        )
+
         # Logged against the sender: this is a thing *this* organization did.
+        # One row, not two — sending an inquiry is one act, and the opener is
+        # that act's message, not a second thing the user did.
         log_activity(
             request,
             organization,
@@ -298,3 +350,112 @@ async def mark_inquiry_read(request, inquiry_id: UUID):
         received_inquiries(organization), public_id=inquiry_id
     )
     return await sync_to_async(_apply_mark_read)(request, organization, inquiry)
+
+
+# ── one inquiry, and its thread ──────────────────────────────────────────────
+#
+# Declared last, after `/received` and `/sent`, for the reason `listings.py`
+# puts `/my` above `/{listing_id}`: `{inquiry_id}` is typed `UUID`, so neither
+# literal segment can actually match it, but the ordering keeps the two kinds
+# of path apart the way a reader expects.
+
+@inquiries_router.get("/{inquiry_id}", response=InquiryDetailOut)
+async def get_inquiry(request, inquiry_id: UUID):
+    """
+    One inquiry, for a member of either party.
+
+    Unlike every other endpoint here, the caller isn't anchored to one side —
+    `party_inquiries` covers both folders, so a member of the provider *or*
+    the customer organization can open it, and anyone else gets a 404 (§0.1).
+    Independently useful today beyond the thread: it's the only way to fetch
+    one inquiry by id at all, rather than finding it inside the first page of
+    `/received` or `/sent`.
+    """
+    organization = caller_organization(request)
+    return await aget_object_or_404(
+        party_inquiries(organization), public_id=inquiry_id
+    )
+
+
+@inquiries_router.get("/{inquiry_id}/messages", response=list[InquiryMessageOut])
+@paginate(LimitOffsetPagination)
+async def list_inquiry_messages(request, inquiry_id: UUID):
+    """
+    The transcript, oldest first — deliberately the opposite ordering of the
+    newest-first inbox, because a conversation reads top-down.
+
+    Reads are never permission-gated (§0.2): readable by any member of either
+    party, same as the inquiry itself. Never empty — every inquiry carries at
+    least its opening message, new or backfilled (see `InquiryMessage`).
+    """
+    organization = caller_organization(request)
+    inquiry = await aget_object_or_404(
+        party_inquiries(organization), public_id=inquiry_id
+    )
+    return thread_messages(inquiry)
+
+
+# What an organization's history should show about a reply. The body is not
+# here, for the same reason `INQUIRY_AUDIT_FIELDS` above omits `message`: it
+# is already on the row, and an audit trail records who acted, not a second
+# copy of the text.
+MESSAGE_AUDIT_FIELDS = ["sender_side"]
+
+
+def message_snapshot(message: InquiryMessage) -> dict:
+    values = snapshot(message, MESSAGE_AUDIT_FIELDS)
+    values["inquiry"] = str(message.inquiry)
+    return values
+
+
+def _apply_send_message(
+    request, organization, inquiry: Inquiry, data: InquiryMessageCreateIn
+) -> InquiryMessage:
+    """Sync transactional core of `send_inquiry_message`."""
+    side = (
+        InquiryMessage.Side.PROVIDER
+        if inquiry.provider_organization_id == organization.pk
+        else InquiryMessage.Side.RENTER
+    )
+    with transaction.atomic():
+        message = InquiryMessage.objects.create(
+            inquiry=inquiry,
+            sender_side=side,
+            created_by=request.auth,
+            body=data.body,
+        )
+        # Against the replying org, same asymmetry as the inquiry itself
+        # (§0.3): "we replied" in the sender's history, "they replied" in the
+        # other org's. The target is the message, not the inquiry, and the
+        # action is `created` — `/stats/owner` counts `status_changed` rows on
+        # an `Inquiry` as "handled", and a reply is neither.
+        log_activity(
+            request,
+            organization,
+            ActivityLog.Action.CREATED,
+            message,
+            changes=diff({}, message_snapshot(message)),
+        )
+    return thread_messages(inquiry).get(pk=message.pk)
+
+
+@inquiries_router.post("/{inquiry_id}/messages", response={201: InquiryMessageOut})
+async def send_inquiry_message(request, inquiry_id: UUID, data: InquiryMessageCreateIn):
+    """
+    Reply to an inquiry, from either side.
+
+    Requires `inquiries.manage` — the same code that already gates sending an
+    inquiry and marking one read (§0.2 — one code per manageable area, not one
+    per endpoint). The caller's organization must be one of the two parties,
+    else 404 (§0.1). A reply does **not** change `read`/`read_at`/`handled_by`
+    — those stay the thread-level triage state the provider owns; per-message
+    read receipts are out of scope here, same as the statuses this proposal
+    also deferred.
+    """
+    organization = writable_organization(request)
+    inquiry = await aget_object_or_404(
+        party_inquiries(organization), public_id=inquiry_id
+    )
+    return 201, await sync_to_async(_apply_send_message)(
+        request, organization, inquiry, data
+    )
