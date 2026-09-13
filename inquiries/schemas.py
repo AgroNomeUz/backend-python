@@ -151,6 +151,27 @@ class InquiryInboxOut(InquiryOut):
         return obj.read_by
 
 
+class InquiryDetailOut(InquiryInboxOut):
+    """
+    `GET /inquiries/{id}` — one inquiry, to whichever party asked for it.
+
+    Unlike `/received` and `/sent`, the caller here may be *either* side, so
+    `handled_by` cannot simply return `obj.read_by`: which member of the
+    provider's organization opened the message is that organization's own
+    business (same rule as `InquiryOut` vs `InquiryInboxOut` above), and this
+    is the one endpoint where the sender might otherwise see it. Resolved
+    against the caller rather than the row — `null` for the sender, never the
+    name — because django-ninja serialises one schema for both parties here.
+    """
+
+    @staticmethod
+    def resolve_handled_by(obj, context):
+        request = (context or {}).get("request")
+        if request is None or request.auth.organization_id != obj.provider_organization_id:
+            return None
+        return obj.read_by
+
+
 # Restated here so pydantic refuses an over-long message before it reaches the
 # database, for the reason listings/schemas.py restates its column widths.
 # `message` is a TextField and has no width of its own, so this is a product
@@ -167,3 +188,51 @@ class InquiryCreateIn(Schema):
     # the view and by the inquiry_dates_ordered constraint.
     start_date: date | None = None
     end_date: date | None = None
+
+
+# ── the reply thread ────────────────────────────────────────────────────────
+
+class InquiryMessageSenderOut(Schema):
+    """
+    Who sent one message, on the wire: the organization *and*, where the
+    account still exists, the person who typed it — `InquiryRenterOut` draws
+    the same pair for the inquiry itself, for the same reason.
+
+    `organization_id` rather than a nested `InquiryOrgOut`: a transcript is
+    read by both sides, and the frontend's only real question per row is "is
+    this one of ours?" — a bare id answers that with one comparison, no
+    lookup table to build from a name.
+    """
+
+    organization_id: UUID
+    organization_name: str
+    user: InquiryUserOut | None = None
+
+
+class InquiryMessageOut(Schema):
+    """One turn in the thread, as either party reads it back."""
+
+    id: UUID = Field(alias="public_id")
+    inquiry_id: UUID
+    body: str
+    sender: InquiryMessageSenderOut
+    created_at: datetime
+
+    @staticmethod
+    def resolve_inquiry_id(obj) -> UUID:
+        return obj.inquiry.public_id
+
+    @staticmethod
+    def resolve_sender(obj) -> dict:
+        org = obj.sender_organization
+        return {
+            "organization_id": org.public_id,
+            "organization_name": org.name,
+            "user": obj.created_by,
+        }
+
+
+class InquiryMessageCreateIn(Schema):
+    # Same cap as the opening message (`MESSAGE_MAX` above) — a reply is not
+    # entitled to be longer than the inquiry it is answering.
+    body: str = Field(min_length=1, max_length=MESSAGE_MAX)
