@@ -1,10 +1,18 @@
 from django.contrib import admin
 
-from .models import Inquiry
+from .models import Inquiry, InquiryMessage
+
+
+class InquiryMessageInline(admin.TabularInline):
+    model = InquiryMessage
+    extra = 0
+    raw_id_fields = ["created_by"]
+    readonly_fields = ["created_at"]
 
 
 @admin.register(Inquiry)
 class InquiryAdmin(admin.ModelAdmin):
+    inlines = [InquiryMessageInline]
     list_display = [
         "listing",
         "customer_organization",
