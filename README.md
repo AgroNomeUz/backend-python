@@ -127,6 +127,17 @@ python manage.py migrate
 python manage.py createsuperuser
 ```
 
+### Load demo data
+
+```bash
+python manage.py seed_regions
+python manage.py seed_demo          # 181 accounts, 634 listings; re-runnable
+python manage.py seed_demo --reset  # remove them again
+```
+
+Every demo account logs in with its phone number and the password `mockuser`.
+See [`equipment/demo_data/README.md`](equipment/demo_data/README.md).
+
 ---
 
 ## API Overview

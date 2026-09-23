@@ -1,0 +1,647 @@
+{
+ "region": "JI",
+ "accounts": [
+  {
+   "phone": "+998951001205",
+   "name": "Aziz Ochilov",
+   "entity_type": "individual",
+   "district": "Jizzakh sh.",
+   "listings": [
+    {
+     "title": "Сдам в аренду New Holland TC5.90",
+     "model": "new-holland-tc5-90",
+     "listing_type": "rent",
+     "price": 270000,
+     "price_unit": "hectare",
+     "has_operator": true,
+     "has_delivery": false,
+     "manufacture_year": 2018,
+     "meter_hours": 290,
+     "serial_number": "JI-01-01-06",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Сдам в аренду John Deere CP690",
+     "model": "john-deere-cp690",
+     "listing_type": "rent",
+     "price": 320000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2019,
+     "meter_hours": 343,
+     "serial_number": "JI-01-02-07",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998971001210",
+   "name": "Bobur Norqulov",
+   "entity_type": "individual",
+   "district": "Zomin",
+   "listings": [
+    {
+     "title": "Сдам в аренду Kverneland Qualidisc Farmer 3000",
+     "model": "kverneland-qualidisc-farmer-3000",
+     "listing_type": "rent",
+     "price": 120000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2019,
+     "meter_hours": 327,
+     "serial_number": "JI-02-01-09",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Сдам в аренду Amazone Cayena 6001",
+     "model": "amazone-cayena-6001",
+     "listing_type": "rent",
+     "price": 120000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 380,
+     "serial_number": "JI-02-02-10",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Продам Horsch Tiger AS 5",
+     "model": "horsch-tiger-as-5",
+     "listing_type": "sale",
+     "price": 95000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2021,
+     "meter_hours": 433,
+     "serial_number": "JI-02-03-11",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    }
+   ]
+  },
+  {
+   "phone": "+998981001215",
+   "name": "Davron Boltayev",
+   "entity_type": "individual",
+   "district": "Do'stlik",
+   "listings": [
+    {
+     "title": "Сдам в аренду Amazone UX 5201",
+     "model": "amazone-ux-5201",
+     "listing_type": "rent",
+     "price": 100000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 364,
+     "serial_number": "JI-03-01-12",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Продам Krone Comprima V150 XC",
+     "model": "krone-comprima-v150-xc",
+     "listing_type": "sale",
+     "price": 91500000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2021,
+     "meter_hours": 417,
+     "serial_number": "JI-03-02-13",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    },
+    {
+     "title": "Сдам в аренду ПТС (СНГ) ПТС-9",
+     "model": "pts-9",
+     "listing_type": "rent",
+     "price": 150000,
+     "price_unit": "day",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2022,
+     "meter_hours": 470,
+     "serial_number": "JI-03-03-14",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Сдам в аренду Manitou MLT 625-75H",
+     "model": "manitou-mlt-625-75h",
+     "listing_type": "rent",
+     "price": 280000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2023,
+     "meter_hours": 523,
+     "serial_number": "JI-03-04-15",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998991001220",
+   "name": "ФХ «Chorvador Plus»",
+   "entity_type": "legal_entity",
+   "district": "Forish",
+   "listings": [
+    {
+     "title": "Продам Manitou MLT 625-75H",
+     "model": "manitou-mlt-625-75h",
+     "listing_type": "sale",
+     "price": 310000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2021,
+     "meter_hours": 401,
+     "serial_number": "JI-04-01-15",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    },
+    {
+     "title": "Сдам в аренду Grimme SE 75-30",
+     "model": "grimme-se-75-30",
+     "listing_type": "rent",
+     "price": 280000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2022,
+     "meter_hours": 454,
+     "serial_number": "JI-04-02-16",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Сдам в аренду MTZ (Belarus) Belarus-892.2",
+     "model": "mtz-belarus-892-2",
+     "listing_type": "rent",
+     "price": 220000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2023,
+     "meter_hours": 507,
+     "serial_number": "JI-04-03-01",
+     "description": "Техника в исправном состоянии, регулярное ТО, полный комплект документов."
+    },
+    {
+     "title": "Сдам в аренду John Deere 6155M",
+     "model": "john-deere-6155m",
+     "listing_type": "rent",
+     "price": 420000,
+     "price_unit": "hour",
+     "has_operator": true,
+     "has_delivery": false,
+     "manufacture_year": 2024,
+     "meter_hours": 560,
+     "serial_number": "JI-04-04-02",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Сдам в аренду Case IH Puma 175 CVX",
+     "model": "case-ih-puma-175-cvx",
+     "listing_type": "rent",
+     "price": 420000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2016,
+     "meter_hours": 613,
+     "serial_number": "JI-04-05-03",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998901001225",
+   "name": "Ozoda Karimova",
+   "entity_type": "individual",
+   "district": "G'allaorol",
+   "listings": [
+    {
+     "title": "Сдам в аренду John Deere 6155M",
+     "model": "john-deere-6155m",
+     "listing_type": "rent",
+     "price": 310000,
+     "price_unit": "hour",
+     "has_operator": true,
+     "has_delivery": true,
+     "manufacture_year": 2022,
+     "meter_hours": 438,
+     "serial_number": "JI-05-01-02",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Сдам в аренду Case IH Puma 175 CVX",
+     "model": "case-ih-puma-175-cvx",
+     "listing_type": "rent",
+     "price": 460000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2023,
+     "meter_hours": 491,
+     "serial_number": "JI-05-02-03",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998911001230",
+   "name": "G'ayrat Rashidov",
+   "entity_type": "individual",
+   "district": "Paxtakor",
+   "listings": [
+    {
+     "title": "Сдам в аренду CLAAS Tucano 450",
+     "model": "claas-tucano-450",
+     "listing_type": "rent",
+     "price": 310000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2023,
+     "meter_hours": 475,
+     "serial_number": "JI-06-01-05",
+     "description": "Техника в исправном состоянии, регулярное ТО, полный комплект документов."
+    },
+    {
+     "title": "Сдам в аренду New Holland TC5.90",
+     "model": "new-holland-tc5-90",
+     "listing_type": "rent",
+     "price": 200000,
+     "price_unit": "hectare",
+     "has_operator": true,
+     "has_delivery": false,
+     "manufacture_year": 2024,
+     "meter_hours": 528,
+     "serial_number": "JI-06-02-06",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Сдам в аренду John Deere CP690",
+     "model": "john-deere-cp690",
+     "listing_type": "rent",
+     "price": 440000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2016,
+     "meter_hours": 581,
+     "serial_number": "JI-06-03-07",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998931001235",
+   "name": "Hasan Yusupov",
+   "entity_type": "individual",
+   "district": "Zafarobod",
+   "listings": [
+    {
+     "title": "Сдам в аренду Lemken Juwel 8",
+     "model": "lemken-juwel-8",
+     "listing_type": "rent",
+     "price": 130000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2024,
+     "meter_hours": 512,
+     "serial_number": "JI-07-01-08",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    },
+    {
+     "title": "Сдам в аренду Kverneland Qualidisc Farmer 3000",
+     "model": "kverneland-qualidisc-farmer-3000",
+     "listing_type": "rent",
+     "price": 90000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2016,
+     "meter_hours": 565,
+     "serial_number": "JI-07-02-09",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Продам Amazone Cayena 6001",
+     "model": "amazone-cayena-6001",
+     "listing_type": "sale",
+     "price": 83000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2017,
+     "meter_hours": 618,
+     "serial_number": "JI-07-03-10",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Сдам в аренду Horsch Tiger AS 5",
+     "model": "horsch-tiger-as-5",
+     "listing_type": "rent",
+     "price": 130000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2018,
+     "meter_hours": 671,
+     "serial_number": "JI-07-04-11",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    }
+   ]
+  },
+  {
+   "phone": "+998941001240",
+   "name": "ФХ «Oltin Bug'doy»",
+   "entity_type": "legal_entity",
+   "district": "Jizzakh sh.",
+   "listings": [
+    {
+     "title": "Сдам в аренду Horsch Tiger AS 5",
+     "model": "horsch-tiger-as-5",
+     "listing_type": "rent",
+     "price": 160000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2016,
+     "meter_hours": 549,
+     "serial_number": "JI-08-01-11",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Продам Amazone UX 5201",
+     "model": "amazone-ux-5201",
+     "listing_type": "sale",
+     "price": 63000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2017,
+     "meter_hours": 602,
+     "serial_number": "JI-08-02-12",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Сдам в аренду Krone Comprima V150 XC",
+     "model": "krone-comprima-v150-xc",
+     "listing_type": "rent",
+     "price": 350000,
+     "price_unit": "shift",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2018,
+     "meter_hours": 655,
+     "serial_number": "JI-08-03-13",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    },
+    {
+     "title": "Сдам в аренду ПТС (СНГ) ПТС-9",
+     "model": "pts-9",
+     "listing_type": "rent",
+     "price": 220000,
+     "price_unit": "day",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2019,
+     "meter_hours": 708,
+     "serial_number": "JI-08-04-14",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Сдам в аренду Manitou MLT 625-75H",
+     "model": "manitou-mlt-625-75h",
+     "listing_type": "rent",
+     "price": 220000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 761,
+     "serial_number": "JI-08-05-15",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998951001245",
+   "name": "Jasur Nazarov",
+   "entity_type": "individual",
+   "district": "Zomin",
+   "listings": [
+    {
+     "title": "Продам ПТС (СНГ) ПТС-9",
+     "model": "pts-9",
+     "listing_type": "sale",
+     "price": 48000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2017,
+     "meter_hours": 586,
+     "serial_number": "JI-09-01-14",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Сдам в аренду Manitou MLT 625-75H",
+     "model": "manitou-mlt-625-75h",
+     "listing_type": "rent",
+     "price": 260000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2018,
+     "meter_hours": 639,
+     "serial_number": "JI-09-02-15",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998971001250",
+   "name": "Gulnora Abdullayeva",
+   "entity_type": "individual",
+   "district": "Do'stlik",
+   "listings": [
+    {
+     "title": "Сдам в аренду MTZ (Belarus) Belarus-892.2",
+     "model": "mtz-belarus-892-2",
+     "listing_type": "rent",
+     "price": 190000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2018,
+     "meter_hours": 623,
+     "serial_number": "JI-10-01-01",
+     "description": "Техника в исправном состоянии, регулярное ТО, полный комплект документов."
+    },
+    {
+     "title": "Сдам в аренду John Deere 6155M",
+     "model": "john-deere-6155m",
+     "listing_type": "rent",
+     "price": 390000,
+     "price_unit": "hour",
+     "has_operator": true,
+     "has_delivery": true,
+     "manufacture_year": 2019,
+     "meter_hours": 676,
+     "serial_number": "JI-10-02-02",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Сдам в аренду Case IH Puma 175 CVX",
+     "model": "case-ih-puma-175-cvx",
+     "listing_type": "rent",
+     "price": 380000,
+     "price_unit": "hour",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 729,
+     "serial_number": "JI-10-03-03",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998981001255",
+   "name": "Laziz Islomov",
+   "entity_type": "individual",
+   "district": "Forish",
+   "listings": [
+    {
+     "title": "Сдам в аренду Kubota M7060",
+     "model": "kubota-m7060",
+     "listing_type": "rent",
+     "price": 180000,
+     "price_unit": "hour",
+     "has_operator": true,
+     "has_delivery": true,
+     "manufacture_year": 2019,
+     "meter_hours": 660,
+     "serial_number": "JI-11-01-04",
+     "description": "Один владелец, при необходимости предоставляем с опытным оператором."
+    },
+    {
+     "title": "Сдам в аренду CLAAS Tucano 450",
+     "model": "claas-tucano-450",
+     "listing_type": "rent",
+     "price": 400000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 713,
+     "serial_number": "JI-11-02-05",
+     "description": "Техника в исправном состоянии, регулярное ТО, полный комплект документов."
+    },
+    {
+     "title": "Сдам в аренду New Holland TC5.90",
+     "model": "new-holland-tc5-90",
+     "listing_type": "rent",
+     "price": 280000,
+     "price_unit": "hectare",
+     "has_operator": true,
+     "has_delivery": false,
+     "manufacture_year": 2021,
+     "meter_hours": 766,
+     "serial_number": "JI-11-03-06",
+     "description": "Хранение в боксе, минимальный износ, возможен показ на месте."
+    },
+    {
+     "title": "Продам John Deere CP690",
+     "model": "john-deere-cp690",
+     "listing_type": "sale",
+     "price": 1196000000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2022,
+     "meter_hours": 819,
+     "serial_number": "JI-11-04-07",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    }
+   ]
+  },
+  {
+   "phone": "+998991001260",
+   "name": "Кооператив «Hosil»",
+   "entity_type": "legal_entity",
+   "district": "G'allaorol",
+   "listings": [
+    {
+     "title": "Сдам в аренду John Deere CP690",
+     "model": "john-deere-cp690",
+     "listing_type": "rent",
+     "price": 400000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2020,
+     "meter_hours": 697,
+     "serial_number": "JI-12-01-07",
+     "description": "Перед сезоном пройдено полное техобслуживание, готова к работе."
+    },
+    {
+     "title": "Сдам в аренду Lemken Juwel 8",
+     "model": "lemken-juwel-8",
+     "listing_type": "rent",
+     "price": 100000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2021,
+     "meter_hours": 750,
+     "serial_number": "JI-12-02-08",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    },
+    {
+     "title": "Продам Kverneland Qualidisc Farmer 3000",
+     "model": "kverneland-qualidisc-farmer-3000",
+     "listing_type": "sale",
+     "price": 54800000,
+     "price_unit": "total",
+     "has_operator": false,
+     "has_delivery": true,
+     "manufacture_year": 2022,
+     "meter_hours": 803,
+     "serial_number": "JI-12-03-09",
+     "description": "Навесное/прицепное оборудование в хорошем состоянии, совместимо с тракторами указанной категории навески."
+    },
+    {
+     "title": "Сдам в аренду Amazone Cayena 6001",
+     "model": "amazone-cayena-6001",
+     "listing_type": "rent",
+     "price": 130000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2023,
+     "meter_hours": 856,
+     "serial_number": "JI-12-04-10",
+     "description": "Рабочие органы в норме, перед выездом проводим осмотр."
+    },
+    {
+     "title": "Сдам в аренду Horsch Tiger AS 5",
+     "model": "horsch-tiger-as-5",
+     "listing_type": "rent",
+     "price": 100000,
+     "price_unit": "hectare",
+     "has_operator": false,
+     "has_delivery": false,
+     "manufacture_year": 2024,
+     "meter_hours": 909,
+     "serial_number": "JI-12-05-11",
+     "description": "Используется по сезону, хранится под навесом, состояние подтверждается на месте."
+    }
+   ]
+  }
+ ]
+}
