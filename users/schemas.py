@@ -9,10 +9,14 @@ All `id` fields carry `public_id` (UUID). Integer PKs never leave the backend.
 from datetime import datetime
 from uuid import UUID
 
+from django.core.exceptions import ObjectDoesNotExist
 from ninja import Field, Schema
 from pydantic import EmailStr
 
+from listings.schemas import absolute_file_url
+
 from .models import OrgPermission
+from .services import organization_display_name
 
 
 class MemberOut(Schema):
@@ -189,3 +193,176 @@ class OrganizationUpdateIn(Schema):
     tax_number: str | None = Field(None, max_length=32)
     phone: str | None = Field(None, max_length=32)
     email: EmailStr | None = Field(None, max_length=254)
+
+
+# ── the public organization profile (seller-profile-proposal.md §2/§3) ───────
+#
+# Everything below is read-only and unauthenticated except
+# `OrganizationContactsOut` (behind a token, no permission code — see
+# `users/organizations.py`). Every hand-built dict a resolver below returns
+# for an aliased field is keyed by the *alias* ("public_id"), not the field
+# name ("id") — django-ninja's `Schema` has no `populate_by_name`, so a dict
+# validates against declared aliases, unlike an ORM instance read through
+# `from_attributes` (which resolves the alias by attribute name transparently).
+
+class PublicOrganizationRegionOut(Schema):
+    """Where the organization is registered — the profile's public region."""
+
+    id: UUID = Field(alias="public_id")
+    name: str
+    code: str
+    slug: str = ""
+
+
+class OrganizationStatsOut(Schema):
+    """
+    `rating_avg`/`review_count` are null/0 until this org has a review — the
+    same "present but null" treatment `ListingOut.rating` gets elsewhere
+    until reviews exist.
+    """
+
+    active_listings: int
+    completed_deals: int
+    rating_avg: float | None = None
+    review_count: int = 0
+
+
+class OrganizationProfileOut(Schema):
+    """`GET /organizations/{id}` — the public seller profile."""
+
+    id: UUID = Field(alias="public_id")
+    name: str
+    entity_type: str
+    is_verified: bool
+    region: PublicOrganizationRegionOut | None = None
+    member_since: datetime = Field(alias="created_at")
+    # No such column exists on `Organization` (§6 of the proposal keeps logo
+    # upload out of scope) — always null.
+    logo_url: str | None = None
+    stats: OrganizationStatsOut
+
+
+class OrganizationContactsOut(Schema):
+    """`GET /organizations/{id}/contacts` — any logged-in user, no permission code."""
+
+    phone: str | None = None
+    email: str | None = None
+    address: str | None = None
+    telegram: str | None = None
+
+
+class DealListingBriefOut(Schema):
+    """Enough of the listing to render one row of a deal-history list."""
+
+    id: UUID = Field(alias="public_id")
+    title: str
+    equipment_type: str | None = None
+    image_url: str | None = None
+
+
+class DealCounterpartyOut(Schema):
+    """
+    The other organization on a deal, named the way §2's display-name rule
+    requires — never the raw `Organization.name` for an `individual`.
+    """
+
+    id: UUID = Field(alias="public_id")
+    display_name: str
+
+
+class DealReviewBriefOut(Schema):
+    id: UUID = Field(alias="public_id")
+    rating: int
+    comment: str
+    created_at: datetime
+
+
+class OrganizationDealOut(Schema):
+    """One row of `GET /organizations/{id}/deals` — completed deals only."""
+
+    id: UUID = Field(alias="public_id")
+    deal_type: str
+    completed_at: datetime | None = None
+    listing: DealListingBriefOut | None = None
+    counterparty: DealCounterpartyOut
+    review: DealReviewBriefOut | None = None
+
+    @staticmethod
+    def resolve_listing(obj, context):
+        """
+        `None` if the listing was later deleted (`Deal.listing` is
+        `SET_NULL`). Requires `listing__asset__equipment_model__category`
+        select_related and `listing__images` prefetched — see
+        `users/organizations.py`'s queryset.
+        """
+        listing = obj.listing
+        if listing is None:
+            return None
+        category = listing.asset.equipment_model.category
+        image = next((img for img in listing.images.all() if img.is_primary), None)
+        return {
+            "public_id": listing.public_id,
+            "title": listing.title,
+            "equipment_type": category.slug if category else None,
+            "image_url": absolute_file_url(image, context) if image else None,
+        }
+
+    @staticmethod
+    def resolve_counterparty(obj):
+        org = obj.customer_organization
+        return {"public_id": org.public_id, "display_name": organization_display_name(org)}
+
+    @staticmethod
+    def resolve_review(obj):
+        """
+        `None` until the counterparty leaves one. The reverse `OneToOneField`
+        accessor raises `DoesNotExist` rather than returning `None` — even
+        with `select_related("review")` joined, so this can't be a plain
+        `getattr(obj, "review", None)`.
+        """
+        try:
+            review = obj.review
+        except ObjectDoesNotExist:
+            return None
+        return {
+            "public_id": review.public_id,
+            "rating": review.rating,
+            "comment": review.comment,
+            "created_at": review.created_at,
+        }
+
+
+class ReviewAuthorOut(Schema):
+    id: UUID = Field(alias="public_id")
+    display_name: str
+
+
+class ReviewDealBriefOut(Schema):
+    id: UUID = Field(alias="public_id")
+    deal_type: str
+    listing_title: str | None = None
+
+
+class OrganizationReviewOut(Schema):
+    """One row of `GET /organizations/{id}/reviews`."""
+
+    id: UUID = Field(alias="public_id")
+    rating: int
+    comment: str
+    created_at: datetime
+    author: ReviewAuthorOut
+    deal: ReviewDealBriefOut
+
+    @staticmethod
+    def resolve_author(obj):
+        org = obj.author_organization
+        return {"public_id": org.public_id, "display_name": organization_display_name(org)}
+
+    @staticmethod
+    def resolve_deal(obj):
+        deal = obj.deal
+        return {
+            "public_id": deal.public_id,
+            "deal_type": deal.deal_type,
+            "listing_title": deal.listing.title if deal.listing_id else None,
+        }
