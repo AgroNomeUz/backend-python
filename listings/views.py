@@ -177,6 +177,7 @@ async def list_listings(
     min_price: float | None = None,
     max_price: float | None = None,
     verified_only: bool | None = None,
+    owner: UUID | None = None,
     sort: str | None = None,
 ):
     """
@@ -226,6 +227,11 @@ async def list_listings(
         qs = qs.filter(price__lte=max_price)
     if verified_only:
         qs = qs.filter(organization__is_verified=True)
+    if owner:
+        # A bad or foreign id yields an empty page, same as every other
+        # filter here — this is a filter, not a single-object lookup, so it
+        # never 404s (seller-profile-proposal.md §8.1).
+        qs = qs.filter(organization__public_id=owner)
 
     if sort:
         if sort not in SORT_OPTIONS:

@@ -24,6 +24,12 @@ class OrgPermission(models.TextChoices):
     MANAGE_EQUIPMENT = "equipment.manage", "Manage equipment"
     MANAGE_USERS = "users.manage", "Manage users"
     MANAGE_INQUIRIES = "inquiries.manage", "Manage inquiries"
+    # Confirming, declining or reviewing a deal commits the org's word and
+    # its reputation — unlike a favorite, this is squarely inside the rule
+    # the §0.2 permission-free exception carves itself out of. One code for
+    # the whole domain, gating all four writes in `deals` (turning an inquiry
+    # into a deal is the provider side's write and needs it too).
+    MANAGE_DEALS = "deals.manage", "Manage deals"
 
 
 class User(PublicIdModel, AbstractUser):
