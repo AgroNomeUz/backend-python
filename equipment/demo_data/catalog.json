@@ -1,0 +1,164 @@
+{
+  "categories": [
+    {"slug": "vehicle", "name": "Vehicle", "is_self_propelled": true},
+    {"slug": "implement", "name": "Implement", "is_self_propelled": false},
+    {"slug": "tractor", "name": "Tractor", "parent": "vehicle", "is_self_propelled": true},
+    {"slug": "combine-harvester", "name": "Combine harvester", "parent": "vehicle", "is_self_propelled": true},
+    {"slug": "cotton-picker", "name": "Cotton picker", "parent": "vehicle", "is_self_propelled": true},
+    {"slug": "telehandler", "name": "Telehandler", "parent": "vehicle", "is_self_propelled": true},
+    {"slug": "plough", "name": "Plough", "parent": "implement"},
+    {"slug": "harrow", "name": "Harrow", "parent": "implement"},
+    {"slug": "seeder", "name": "Seeder", "parent": "implement"},
+    {"slug": "cultivator", "name": "Cultivator", "parent": "implement"},
+    {"slug": "sprayer", "name": "Sprayer", "parent": "implement"},
+    {"slug": "baler", "name": "Baler", "parent": "implement"},
+    {"slug": "trailer", "name": "Trailer", "parent": "implement"},
+    {"slug": "potato-harvester", "name": "Potato harvester", "parent": "implement"}
+  ],
+  "manufacturers": [
+    {"name": "MTZ", "country": "Belarus"},
+    {"name": "John Deere", "country": "USA"},
+    {"name": "Case IH", "country": "USA"},
+    {"name": "Kubota", "country": "Japan"},
+    {"name": "CLAAS", "country": "Germany"},
+    {"name": "New Holland", "country": "Italy"},
+    {"name": "Lemken", "country": "Germany"},
+    {"name": "Kverneland", "country": "Norway"},
+    {"name": "Amazone", "country": "Germany"},
+    {"name": "Horsch", "country": "Germany"},
+    {"name": "Krone", "country": "Germany"},
+    {"name": "ПТС", "country": ""},
+    {"name": "Manitou", "country": "France"},
+    {"name": "Grimme", "country": "Germany"}
+  ],
+  "models": [
+    {
+      "key": "mtz-belarus-892-2", "photo": "c01.jpg",
+      "manufacturer": "MTZ", "name": "Belarus-892.2", "category": "tractor",
+      "year_from": 2015, "engine_power_kw": "63.4", "weight_kg": 3800,
+      "length_mm": 4200, "width_mm": 1970, "height_mm": 2780,
+      "fuel_type": "diesel", "is_self_propelled": true, "hitch_category": "cat2",
+      "specifications": {"horsepower": 86, "drive": "4x4", "pto_rpm": [540, 1000]}
+    },
+    {
+      "key": "john-deere-6155m", "photo": "c02.jpg",
+      "manufacturer": "John Deere", "name": "6155M", "category": "tractor",
+      "year_from": 2018, "engine_power_kw": "114", "weight_kg": 6200,
+      "length_mm": 4670, "width_mm": 2200, "height_mm": 3000,
+      "fuel_type": "diesel", "is_self_propelled": true, "hitch_category": "cat3",
+      "specifications": {"horsepower": 155, "drive": "4WD", "transmission": "PowrQuad Plus", "pto_rpm": [540, 1000]}
+    },
+    {
+      "key": "case-ih-puma-175-cvx", "photo": "c03.jpg",
+      "manufacturer": "Case IH", "name": "Puma 175 CVX", "category": "tractor",
+      "year_from": 2017, "engine_power_kw": "129", "weight_kg": 7300,
+      "length_mm": 4850, "width_mm": 2300, "height_mm": 3050,
+      "fuel_type": "diesel", "is_self_propelled": true, "hitch_category": "cat3",
+      "specifications": {"horsepower": 175, "transmission": "CVX", "cab": "Surveyor"}
+    },
+    {
+      "key": "kubota-m7060", "photo": "c04.jpg",
+      "manufacturer": "Kubota", "name": "M7060", "category": "tractor",
+      "year_from": 2016, "engine_power_kw": "51.6", "weight_kg": 2650,
+      "length_mm": 3700, "width_mm": 1700, "height_mm": 2500,
+      "fuel_type": "diesel", "is_self_propelled": true, "hitch_category": "cat2",
+      "specifications": {"horsepower": 70, "drive": "4WD", "use": "orchard / vineyard"}
+    },
+    {
+      "key": "claas-tucano-450", "photo": "c05.jpg",
+      "manufacturer": "CLAAS", "name": "Tucano 450", "category": "combine-harvester",
+      "year_from": 2019, "engine_power_kw": "218", "weight_kg": 11700,
+      "length_mm": 8100, "width_mm": 3300, "height_mm": 3900, "working_width_mm": 6000,
+      "fuel_type": "diesel", "is_self_propelled": true,
+      "specifications": {"horsepower": 296, "grain_tank_l": 7000}
+    },
+    {
+      "key": "new-holland-tc5-90", "photo": "c06.jpg",
+      "manufacturer": "New Holland", "name": "TC5.90", "category": "combine-harvester",
+      "year_from": 2016, "engine_power_kw": "156", "weight_kg": 9200,
+      "length_mm": 7600, "width_mm": 3100, "height_mm": 3600, "working_width_mm": 5200,
+      "fuel_type": "diesel", "is_self_propelled": true,
+      "specifications": {"horsepower": 212, "grain_tank_l": 5700}
+    },
+    {
+      "key": "john-deere-cp690", "photo": "c07.jpg",
+      "manufacturer": "John Deere", "name": "CP690", "category": "cotton-picker",
+      "year_from": 2018, "engine_power_kw": "272", "weight_kg": 18500,
+      "length_mm": 9900, "width_mm": 3600, "height_mm": 4400,
+      "fuel_type": "diesel", "is_self_propelled": true,
+      "specifications": {"horsepower": 365, "rows": 6, "basket_m3": 16.3}
+    },
+    {
+      "key": "lemken-juwel-8", "photo": "c08.jpg",
+      "manufacturer": "Lemken", "name": "Juwel 8", "category": "plough",
+      "year_from": 2015, "weight_kg": 1450,
+      "length_mm": 3200, "width_mm": 2600, "height_mm": 1600, "working_width_mm": 2100,
+      "fuel_type": "na", "requires_hitch": "cat3",
+      "specifications": {"furrows": 5}
+    },
+    {
+      "key": "kverneland-qualidisc-farmer-3000", "photo": "c09.jpg",
+      "manufacturer": "Kverneland", "name": "Qualidisc Farmer 3000", "category": "harrow",
+      "year_from": 2016, "weight_kg": 2850,
+      "length_mm": 3900, "width_mm": 3000, "height_mm": 1450, "working_width_mm": 3000,
+      "fuel_type": "na", "requires_hitch": "cat2",
+      "specifications": {"discs": 24}
+    },
+    {
+      "key": "amazone-cayena-6001", "photo": "c10.jpg",
+      "manufacturer": "Amazone", "name": "Cayena 6001", "category": "seeder",
+      "year_from": 2017, "weight_kg": 3200,
+      "length_mm": 6100, "width_mm": 2500, "height_mm": 1600, "working_width_mm": 6000,
+      "fuel_type": "na", "requires_hitch": "cat2",
+      "specifications": {"hopper_l": 3800}
+    },
+    {
+      "key": "horsch-tiger-as-5", "photo": "c11.jpg",
+      "manufacturer": "Horsch", "name": "Tiger AS 5", "category": "cultivator",
+      "year_from": 2018, "weight_kg": 4700,
+      "length_mm": 5800, "width_mm": 2900, "height_mm": 1700, "working_width_mm": 5000,
+      "fuel_type": "na", "requires_hitch": "cat3",
+      "specifications": {"tine_rows": 3}
+    },
+    {
+      "key": "amazone-ux-5201", "photo": "c12.jpg",
+      "manufacturer": "Amazone", "name": "UX 5201", "category": "sprayer",
+      "year_from": 2016, "weight_kg": 3600,
+      "length_mm": 8200, "width_mm": 2900, "height_mm": 3400, "working_width_mm": 24000,
+      "fuel_type": "na", "requires_hitch": "cat2",
+      "specifications": {"tank_l": 5200, "boom_m": 24, "weight_note": "empty"}
+    },
+    {
+      "key": "krone-comprima-v150-xc", "photo": "c13.jpg",
+      "manufacturer": "Krone", "name": "Comprima V150 XC", "category": "baler",
+      "year_from": 2018, "weight_kg": 3350,
+      "length_mm": 4600, "width_mm": 2550, "height_mm": 2650,
+      "fuel_type": "na", "requires_hitch": "cat2",
+      "specifications": {"bale_diameter_cm": 150, "chamber": "variable"}
+    },
+    {
+      "key": "pts-9", "photo": "c14.jpg",
+      "manufacturer": "ПТС", "name": "ПТС-9", "category": "trailer",
+      "year_from": 2010, "weight_kg": 2600,
+      "length_mm": 6100, "width_mm": 2350, "height_mm": 1550,
+      "fuel_type": "na", "requires_hitch": "drawbar",
+      "specifications": {"payload_kg": 9000, "tipping": "3-way", "weight_note": "empty"}
+    },
+    {
+      "key": "manitou-mlt-625-75h", "photo": "c15.jpg",
+      "manufacturer": "Manitou", "name": "MLT 625-75H", "category": "telehandler",
+      "year_from": 2017, "engine_power_kw": "55", "weight_kg": 5700,
+      "length_mm": 5100, "width_mm": 2100, "height_mm": 2400,
+      "fuel_type": "diesel", "is_self_propelled": true,
+      "specifications": {"horsepower": 75, "lift_capacity_kg": 2500, "lift_height_m": 5.8}
+    },
+    {
+      "key": "grimme-se-75-30", "photo": "c16.jpg",
+      "manufacturer": "Grimme", "name": "SE 75-30", "category": "potato-harvester",
+      "year_from": 2015, "weight_kg": 3900,
+      "length_mm": 5600, "width_mm": 2900, "height_mm": 2600,
+      "fuel_type": "na", "requires_hitch": "cat3",
+      "specifications": {"rows": 2, "bunker_t": 3.5}
+    }
+  ]
+}

@@ -1,12 +1,19 @@
+import json
+import tempfile
 from decimal import Decimal
+from io import StringIO
+from pathlib import Path
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import ActivityLog
+from inquiries.models import Inquiry
+from listings.models import Listing, ListingImage
 from users.models import Organization, Region, User
 
 from .models import (
@@ -485,3 +492,156 @@ class AssetWriteTests(TestCase):
         self.assertEqual(response.status_code, 404)
         foreign.refresh_from_db()
         self.assertEqual(foreign.serial_number, "")
+
+
+class SeedDemoTests(TestCase):
+    """
+    `manage.py seed_demo`, run against one region's file to keep it quick.
+
+    Sirdaryo is the smallest file; the counts come from the file itself so
+    editing the demo data doesn't break these tests.
+    """
+
+    REGION = "SI"
+
+    @classmethod
+    def setUpClass(cls):
+        # seed_demo copies a photo per listing; keep them out of the real
+        # MEDIA_ROOT, as ListingTestCase does for uploads.
+        cls._media = tempfile.TemporaryDirectory()
+        cls.enterClassContext(override_settings(MEDIA_ROOT=cls._media.name))
+        cls.addClassCleanup(cls._media.cleanup)
+        super().setUpClass()
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_regions", stdout=StringIO())
+        path = Path(__file__).parent / "demo_data" / "regions" / "si.json"
+        cls.accounts = json.loads(path.read_text())["accounts"]
+        cls.listing_count = sum(len(a["listings"]) for a in cls.accounts)
+
+    def seed(self, *args):
+        call_command("seed_demo", "--region", self.REGION, *args, stdout=StringIO())
+
+    def demo_listings(self):
+        return Listing.objects.filter(region__code=self.REGION)
+
+    def test_seeds_accounts_machines_and_listings(self):
+        self.seed()
+
+        self.assertEqual(
+            User.objects.filter(phone__in=[a["phone"] for a in self.accounts]).count(),
+            len(self.accounts),
+        )
+        self.assertEqual(self.demo_listings().count(), self.listing_count)
+        self.assertEqual(
+            self.demo_listings().filter(status=Listing.Status.ACTIVE).count(),
+            self.listing_count,
+        )
+        self.assertEqual(EquipmentModel.objects.count(), 16)
+
+    def test_every_account_logs_in_with_the_demo_password(self):
+        self.seed()
+
+        for account in self.accounts:
+            user = User.objects.get(phone=account["phone"])
+            self.assertTrue(user.check_password("mockuser"), account["phone"])
+            self.assertTrue(user.is_organization_owner)
+            self.assertEqual(user.organization, user.owned_organization)
+
+    def test_only_legal_entities_are_verified(self):
+        self.seed()
+
+        for account in self.accounts:
+            org = Organization.objects.get(owner__phone=account["phone"])
+            self.assertEqual(org.entity_type, account["entity_type"])
+            self.assertEqual(org.is_verified, account["entity_type"] == "legal_entity")
+
+    def test_every_listing_has_its_own_photo_on_disk(self):
+        self.seed()
+
+        images = ListingImage.objects.filter(listing__region__code=self.REGION)
+        self.assertEqual(images.filter(is_primary=True).count(), self.listing_count)
+        names = set()
+        for image in images:
+            self.assertTrue(image.file.storage.exists(image.file.name))
+            self.assertIn(str(image.listing.public_id), image.file.name)
+            names.add(image.file.name)
+        self.assertEqual(len(names), self.listing_count)
+
+    def test_listings_are_backdated(self):
+        self.seed()
+
+        now = timezone.now()
+        for listing in self.demo_listings():
+            self.assertLessEqual(listing.created_at, now)
+            self.assertEqual(listing.created_at, listing.published_at)
+        self.assertGreater(
+            len(set(self.demo_listings().values_list("created_at", flat=True))), 1
+        )
+
+    def test_rerunning_updates_instead_of_duplicating(self):
+        self.seed()
+        listing = self.demo_listings().first()
+        listing.price = 1
+        listing.status = Listing.Status.PAUSED
+        listing.save()
+
+        self.seed()
+
+        self.assertEqual(self.demo_listings().count(), self.listing_count)
+        self.assertEqual(
+            ListingImage.objects.filter(listing__region__code=self.REGION).count(),
+            self.listing_count,
+        )
+        listing.refresh_from_db()
+        self.assertNotEqual(listing.price, 1)
+        self.assertEqual(listing.status, Listing.Status.ACTIVE)
+
+    def test_rerunning_restores_a_missing_photo_file(self):
+        self.seed()
+        image = ListingImage.objects.filter(listing__region__code=self.REGION).first()
+        image.file.storage.delete(image.file.name)
+
+        self.seed()
+
+        image = ListingImage.objects.get(listing=image.listing, is_primary=True)
+        self.assertTrue(image.file.storage.exists(image.file.name))
+
+    def test_reset_removes_demo_accounts_and_keeps_the_catalog(self):
+        self.seed()
+        visitor = User.objects.create_user(username="visitor", phone="+998900000001")
+        visitor_org = Organization.objects.create(name="Visitor", owner=visitor)
+        listing = self.demo_listings().first()
+        Inquiry.objects.create(
+            listing=listing,
+            provider_organization=listing.organization,
+            customer_organization=visitor_org,
+            created_by=visitor,
+            message="Is it free next week?",
+        )
+        image = listing.images.get()
+
+        # Files are removed on commit, which TestCase never reaches on its own.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.seed("--reset")
+
+        self.assertFalse(self.demo_listings().exists())
+        self.assertFalse(
+            User.objects.filter(phone__in=[a["phone"] for a in self.accounts]).exists()
+        )
+        self.assertFalse(Asset.objects.filter(serial_number__startswith="SI-").exists())
+        self.assertFalse(Inquiry.objects.exists())
+        self.assertFalse(image.file.storage.exists(image.file.name))
+        self.assertTrue(User.objects.filter(pk=visitor.pk).exists())
+        self.assertEqual(EquipmentModel.objects.count(), 16)
+
+    def test_refuses_to_run_before_regions_are_seeded(self):
+        Region.objects.all().delete()
+
+        with self.assertRaisesMessage(CommandError, "seed_regions"):
+            self.seed()
+
+    def test_rejects_an_unknown_region(self):
+        with self.assertRaisesMessage(CommandError, "No demo data for zz"):
+            call_command("seed_demo", "--region", "ZZ", stdout=StringIO())

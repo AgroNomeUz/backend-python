@@ -1,0 +1,36 @@
+Index: users/models.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from django.contrib.auth.models import AbstractUser\nfrom django.db import models\n\n\nclass User(AbstractUser):\n    pass\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/users/models.py b/users/models.py
+--- a/users/models.py	(revision 2ce74f53182dcb28428917106d0ecf12cae58880)
++++ b/users/models.py	(date 1779772071676)
+@@ -2,5 +2,24 @@
+ from django.db import models
+ 
+ 
++class Organization(models.Model):
++    name = models.CharField(max_length=255)
++    owner = models.ForeignKey(
++        'User',
++        on_delete=models.PROTECT,
++        related_name='owned_organizations',
++        null=True,
++    )
++    created_at = models.DateTimeField(auto_now_add=True)
++
++    def __str__(self):
++        return self.name
++
++
+ class User(AbstractUser):
+-    pass
++    organization = models.ForeignKey(
++        Organization,
++        on_delete=models.PROTECT,
++        related_name='members',
++        null=True,
++    )
