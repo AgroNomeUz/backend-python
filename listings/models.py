@@ -52,6 +52,13 @@ class Listing(PublicIdModel):
         ACTIVE = "active", "Active"
         PAUSED = "paused", "Paused"
         ARCHIVED = "archived", "Archived"
+        # Set when a `deals.Deal` of type `sale` is confirmed (§0.5's "left
+        # open" item, resolved in seller-profile-proposal.md §8.4): more
+        # informative on the profile's deal history than `archived` — a
+        # success, not a withdrawal. What happens to `Asset.organization`
+        # after a sale is a separate, still-open question this status does
+        # not answer.
+        SOLD = "sold", "Sold"
 
     class PriceUnit(models.TextChoices):
         HOUR = "hour", "Per hour"

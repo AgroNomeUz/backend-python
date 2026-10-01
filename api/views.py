@@ -24,11 +24,13 @@ from ninja.errors import HttpError
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
 from core.views import activity_router
+from deals.views import deal_creation_router, deals_router
 from equipment.views import assets_router, catalog_router
 from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
 from users.models import Organization, Region, User
+from users.organizations import organizations_router
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
 from users.services import normalize_phone, username_for_phone
 from users.views import members_router
@@ -72,7 +74,15 @@ api.add_router("/users", me_router)
 api.add_router("/org", org_router)
 api.add_router("/listings", listings_router)
 api.add_router("/inquiries", inquiries_router)
+# A second, distinct Router at the same "/inquiries" prefix — safe per
+# django-ninja's add_router (it only rejects mounting the *same* Router
+# object twice without url_name_prefix). Kept in its own module, `deals`,
+# rather than merged into inquiries_router: turning an inquiry into a deal
+# is where the two domains meet, not where they live.
+api.add_router("/inquiries", deal_creation_router)
+api.add_router("/deals", deals_router)
 api.add_router("/favorites", favorites_router)
+api.add_router("/organizations", organizations_router)
 api.add_router("/regions", regions_router)
 api.add_router("/stats", stats_router)
 # Deprecated, all three. `/public/listings`, `/public/regions` and

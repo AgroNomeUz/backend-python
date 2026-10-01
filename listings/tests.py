@@ -606,6 +606,40 @@ class ListingWriteTests(ListingTestCase):
         listing.refresh_from_db()
         self.assertEqual(listing.published_at, first)
 
+    def test_status_cannot_be_set_to_sold_directly(self):
+        """
+        `sold` is set only by a confirmed sale deal (`deals` app), never by
+        the ordinary listing-update endpoint — otherwise an owner could claim
+        a sale that never went through the deal/review pipeline at all.
+        """
+        listing = self.make_listing(status=Listing.Status.ACTIVE)
+        response = self.client.patch(
+            f"/api/v1/listings/{listing.public_id}",
+            data={"status": "sold"},
+            content_type="application/json",
+            **auth(self.owner),
+        )
+        self.assertEqual(response.status_code, 400)
+        listing.refresh_from_db()
+        self.assertEqual(listing.status, Listing.Status.ACTIVE)
+
+    def test_a_sold_listing_cannot_be_moved_to_another_status(self):
+        """
+        Otherwise a completed sale could "unsell" itself and the same
+        machine would return to the public market (seller-profile-proposal.md
+        §8.4 — sold is a terminal, system-managed state).
+        """
+        listing = self.make_listing(status=Listing.Status.SOLD)
+        response = self.client.patch(
+            f"/api/v1/listings/{listing.public_id}",
+            data={"status": "active"},
+            content_type="application/json",
+            **auth(self.owner),
+        )
+        self.assertEqual(response.status_code, 409)
+        listing.refresh_from_db()
+        self.assertEqual(listing.status, Listing.Status.SOLD)
+
     def test_patch_on_another_orgs_listing_is_404(self):
         listing = self.make_listing()
         response = self.client.patch(

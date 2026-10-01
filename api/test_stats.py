@@ -285,7 +285,7 @@ class OwnerListingStatsTests(StatsTestCase):
         data = self.client.get(OWNER, **auth(self.seller_owner)).json()
         self.assertEqual(
             data["listings_by_status"],
-            {"draft": 0, "active": 1, "paused": 0, "archived": 0},
+            {"draft": 0, "active": 1, "paused": 0, "archived": 0, "sold": 0},
         )
 
     def test_another_organizations_listings_are_not_counted(self):

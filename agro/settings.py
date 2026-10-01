@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'listings.apps.ListingsConfig',
     'inquiries.apps.InquiriesConfig',
     'favorites.apps.FavoritesConfig',
+    'deals.apps.DealsConfig',
 ]
 
 MIDDLEWARE = [
