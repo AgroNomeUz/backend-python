@@ -114,6 +114,19 @@ class DealTestCase(TestCase):
     def setUpAuthorizedActors(self):
         self.grant_deals_permission(self.seller_owner, self.buyer_owner)
 
+    def make_second_buyer(self, suffix="2"):
+        """A third organization, distinct from `seller_org`/`buyer_org` —
+        for tests about a *competing* customer on the same listing."""
+        owner = User.objects.create_user(
+            username=f"second-buyer-owner-{suffix}", password="x", full_name="Second Buyer"
+        )
+        org = Organization.objects.create(
+            name=f"Second Buyer Org {suffix}", owner=owner, region=self.region
+        )
+        owner.organization = org
+        owner.save(update_fields=["organization"])
+        return owner, org
+
 
 class CreateDealTests(DealTestCase):
     """`POST /inquiries/{id}/deal` — the provider's write."""
@@ -179,6 +192,43 @@ class CreateDealTests(DealTestCase):
 
     def test_an_unknown_deal_type_is_a_422(self):
         self.assertEqual(self.create_deal(deal_type="lease").status_code, 422)
+
+    def test_a_second_sale_deal_on_the_same_listing_is_a_409(self):
+        """
+        A machine can only be sold once — a *different* inquiry on the same
+        sale listing must not be allowed to start a competing sale deal
+        while one is already pending or completed.
+        """
+        sale_listing = self.make_listing(
+            listing_type=Listing.ListingType.SALE,
+            price_unit=Listing.PriceUnit.TOTAL,
+            title="MTZ-82 for sale",
+        )
+        first_inquiry = self.make_inquiry(listing=sale_listing)
+        first = self.create_deal(inquiry=first_inquiry, deal_type="sale")
+        self.assertEqual(first.status_code, 201, first.content)
+
+        _, second_buyer_org = self.make_second_buyer()
+        second_inquiry = self.make_inquiry(
+            listing=sale_listing, customer_organization=second_buyer_org
+        )
+        second = self.create_deal(inquiry=second_inquiry, deal_type="sale")
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(
+            Deal.objects.filter(listing=sale_listing, deal_type=Deal.DealType.SALE).count(), 1
+        )
+
+    def test_a_rent_deal_does_not_trigger_the_sale_exclusivity_check(self):
+        """Only `sale` is exclusive — several rent deals on one listing are fine."""
+        first = self.create_deal(deal_type="rent")
+        self.assertEqual(first.status_code, 201)
+
+        _, second_buyer_org = self.make_second_buyer()
+        second_listing_inquiry = self.make_inquiry(
+            listing=self.listing, customer_organization=second_buyer_org
+        )
+        second = self.create_deal(inquiry=second_listing_inquiry, deal_type="rent")
+        self.assertEqual(second.status_code, 201)
 
 
 class ConfirmDeclineTests(DealTestCase):
@@ -255,6 +305,60 @@ class ConfirmDeclineTests(DealTestCase):
         self.confirm()
         self.listing.refresh_from_db()
         self.assertEqual(self.listing.status, Listing.Status.ACTIVE)
+
+    def test_confirming_a_second_pending_sale_deal_is_a_409_once_the_first_sold(self):
+        """
+        Two inquiries on the same sale listing can each become a pending
+        deal (the creation-time check in `CreateDealTests` only blocks a
+        *second* one once one already exists) — this is the guard that
+        actually stops both from completing: confirming the first marks the
+        listing `sold`, and confirming the second must then be refused
+        rather than silently completing a second sale of the same machine.
+        """
+        sale_listing = self.make_listing(
+            listing_type=Listing.ListingType.SALE,
+            price_unit=Listing.PriceUnit.TOTAL,
+            title="MTZ-82 for sale",
+        )
+        first_inquiry = self.make_inquiry(listing=sale_listing)
+        first_deal = Deal.objects.create(
+            listing=sale_listing,
+            inquiry=first_inquiry,
+            provider_organization=self.seller_org,
+            customer_organization=self.buyer_org,
+            deal_type=Deal.DealType.SALE,
+            created_by=self.seller_owner,
+        )
+
+        second_buyer_owner, second_buyer_org = self.make_second_buyer()
+        second_inquiry = self.make_inquiry(
+            listing=sale_listing, customer_organization=second_buyer_org
+        )
+        second_deal = Deal.objects.create(
+            listing=sale_listing,
+            inquiry=second_inquiry,
+            provider_organization=self.seller_org,
+            customer_organization=second_buyer_org,
+            deal_type=Deal.DealType.SALE,
+            created_by=self.seller_owner,
+        )
+
+        first_response = self.confirm(deal=first_deal)
+        self.assertEqual(first_response.status_code, 200, first_response.content)
+        sale_listing.refresh_from_db()
+        self.assertEqual(sale_listing.status, Listing.Status.SOLD)
+
+        second_response = self.confirm(user=second_buyer_owner, deal=second_deal)
+        self.assertEqual(second_response.status_code, 409, second_response.content)
+
+        second_deal.refresh_from_db()
+        self.assertEqual(second_deal.status, Deal.Status.PENDING_CONFIRMATION)
+        self.assertEqual(
+            Deal.objects.filter(
+                listing=sale_listing, status=Deal.Status.COMPLETED
+            ).count(),
+            1,
+        )
 
     def test_confirming_is_logged_against_the_customer(self):
         self.confirm()

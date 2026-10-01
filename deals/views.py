@@ -103,6 +103,23 @@ def _integrity_error(exc: IntegrityError) -> HttpError:
 def _apply_create_deal(request, organization, inquiry, data: DealCreateIn) -> Deal:
     """Sync transactional core of `create_deal`."""
     with transaction.atomic():
+        if data.deal_type == Deal.DealType.SALE and inquiry.listing_id:
+            # A machine can only be sold once. `select_for_update` locks the
+            # listing row for the rest of this transaction, so two sale
+            # deals proposed on the same listing at the same moment (from
+            # two different inquiries — `deal_one_per_inquiry` only stops a
+            # *second* deal on the *same* inquiry) serialize here rather than
+            # both passing this check and racing each other to confirmation.
+            Listing.objects.select_for_update().get(pk=inquiry.listing_id)
+            conflicting = Deal.objects.filter(
+                listing_id=inquiry.listing_id,
+                deal_type=Deal.DealType.SALE,
+                status__in=[Deal.Status.PENDING_CONFIRMATION, Deal.Status.COMPLETED],
+            ).exists()
+            if conflicting:
+                raise HttpError(
+                    409, "This listing already has a pending or completed sale."
+                )
         try:
             deal = Deal.objects.create(
                 listing=inquiry.listing,
@@ -163,6 +180,25 @@ def _apply_confirm_deal(request, organization, deal: Deal) -> Deal:
     """Sync transactional core of `confirm_deal`."""
     _require_pending(deal)
     with transaction.atomic():
+        # Locked and re-checked here, not read off `deal.listing` (which may
+        # have been loaded before another, concurrently-confirmed sale deal
+        # on the same listing committed): this is the authoritative check
+        # that actually prevents one machine being sold twice. The
+        # creation-time check in `_apply_create_deal` only rejects a second
+        # *pending* sale deal early — it cannot see a confirm that is
+        # in-flight in another transaction, which is exactly the race this
+        # lock closes. Two different inquiries on the same sale listing can
+        # still each become a pending deal if they're created far enough
+        # apart that the first hasn't completed yet; this is what stops both
+        # from completing.
+        listing = None
+        if deal.deal_type == Deal.DealType.SALE and deal.listing_id:
+            listing = Listing.objects.select_for_update().get(pk=deal.listing_id)
+            if listing.status == Listing.Status.SOLD:
+                raise HttpError(
+                    409, "This listing has already been sold to another customer."
+                )
+
         deal.status = Deal.Status.COMPLETED
         deal.completed_at = timezone.now()
         deal.save(update_fields=["status", "completed_at", "updated_at"])
@@ -187,12 +223,7 @@ def _apply_confirm_deal(request, organization, deal: Deal) -> Deal:
         # organization, whose listing this is, even though the confirming
         # member belongs to the customer org: the row is about what happened
         # to the listing, not about who held the token.
-        if (
-            deal.deal_type == Deal.DealType.SALE
-            and deal.listing_id
-            and deal.listing.status != Listing.Status.SOLD
-        ):
-            listing = deal.listing
+        if listing is not None:
             before_status = listing.status
             listing.status = Listing.Status.SOLD
             listing.save(update_fields=["status", "updated_at"])
