@@ -9,9 +9,11 @@ here is a scoping mistake (the provider's write vs. the customer's), so the
 tests check the wrong side's attempt as often as the right one.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
-from django.test import TestCase
+from django.db import connection
+from django.test import Client, TestCase, TransactionTestCase
 from django.utils import timezone
 
 from api.auth import create_access_token
@@ -469,3 +471,124 @@ class ReviewTests(DealTestCase):
         self.assertEqual(entry.organization, self.buyer_org)
         self.assertEqual(entry.actor, self.buyer_owner)
         self.assertEqual(entry.action, ActivityLog.Action.CREATED)
+
+
+class ConcurrentConfirmDeclineTests(TransactionTestCase):
+    """
+    Confirm and decline arriving at once for the same deal.
+
+    `_apply_confirm_deal`/`_apply_decline_deal` each read the deal once, in
+    the view, before entering their own transaction. Without the conditional
+    `UPDATE ... WHERE status = pending_confirmation` guard, both could still
+    believe the deal was pending and both save — a declined deal left with
+    `completed_at` set, or (worse, for a sale) a listing marked `sold` by a
+    confirm that a concurrent decline then silently undid without ever
+    un-selling it.
+
+    A `TransactionTestCase`, not the usual `TestCase`, because real threads
+    need real commits to actually race: `TestCase` wraps a test in one
+    transaction no other connection can see. Mirrors
+    `listings.tests.ConcurrentUploadTests` — the assertions are about the
+    invariant (exactly one side wins, and exactly one audit row exists)
+    rather than which side, so nothing here depends on the race actually
+    being hit on any given run.
+    """
+
+    def setUp(self):
+        self.region = Region.objects.create(
+            name="Race Deal Region", code="RDR", soato="9998"
+        )
+
+        self.seller_owner = User.objects.create_user(
+            username="race-seller-owner", password="x", full_name="Race Seller"
+        )
+        self.seller_org = Organization.objects.create(
+            name="Race Seller Org", owner=self.seller_owner, region=self.region
+        )
+        self.seller_owner.organization = self.seller_org
+        self.seller_owner.save(update_fields=["organization"])
+
+        self.buyer_owner = User.objects.create_user(
+            username="race-buyer-owner", password="x", full_name="Race Buyer"
+        )
+        self.buyer_org = Organization.objects.create(
+            name="Race Buyer Org", owner=self.buyer_owner, region=self.region
+        )
+        self.buyer_owner.organization = self.buyer_org
+        self.buyer_owner.save(update_fields=["organization"])
+
+        manufacturer = Manufacturer.objects.create(name="MTZ")
+        category = EquipmentCategory.objects.create(name="Tractor", slug="tractor")
+        equipment_model = EquipmentModel.objects.create(
+            manufacturer=manufacturer, category=category, name="82.1"
+        )
+        asset = Asset.objects.create(
+            organization=self.seller_org, equipment_model=equipment_model
+        )
+        listing = Listing.objects.create(
+            organization=self.seller_org,
+            asset=asset,
+            created_by=self.seller_owner,
+            region=self.region,
+            listing_type=Listing.ListingType.RENT,
+            status=Listing.Status.ACTIVE,
+            title="Contended rental",
+            price="400000.00",
+            price_unit=Listing.PriceUnit.DAY,
+        )
+        inquiry = Inquiry.objects.create(
+            listing=listing,
+            provider_organization=self.seller_org,
+            customer_organization=self.buyer_org,
+            created_by=self.buyer_owner,
+            message="Interested",
+        )
+        self.deal = Deal.objects.create(
+            listing=listing,
+            inquiry=inquiry,
+            provider_organization=self.seller_org,
+            customer_organization=self.buyer_org,
+            deal_type=Deal.DealType.RENT,
+            created_by=self.seller_owner,
+        )
+        self.token = create_access_token(self.buyer_owner.public_id)
+
+    def _post(self, action: str) -> int:
+        try:
+            return Client().post(
+                f"/api/v1/deals/{self.deal.public_id}/{action}",
+                HTTP_AUTHORIZATION=f"Bearer {self.token}",
+            ).status_code
+        finally:
+            # Each thread opens its own connection; leaving them behind makes
+            # the post-test database teardown hang on the open handles.
+            connection.close()
+
+    def test_only_one_side_of_a_confirm_decline_race_wins(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            confirm_future = pool.submit(self._post, "confirm")
+            decline_future = pool.submit(self._post, "decline")
+            confirm_status = confirm_future.result()
+            decline_status = decline_future.result()
+
+        self.assertEqual(sorted([confirm_status, decline_status]), [200, 409])
+
+        self.deal.refresh_from_db()
+        if confirm_status == 200:
+            self.assertEqual(self.deal.status, Deal.Status.COMPLETED)
+            self.assertIsNotNone(self.deal.completed_at)
+        else:
+            self.assertEqual(self.deal.status, Deal.Status.DECLINED)
+            # The bug this guards against: a decline that landed after a
+            # confirm, without ever clearing the completed_at a confirm it
+            # raced would have set.
+            self.assertIsNone(self.deal.completed_at)
+
+        # Exactly one status-change row for this deal, however the race
+        # resolved — never both a completed and a declined entry.
+        status_changes = ActivityLog.objects.filter(
+            content_type__model="deal",
+            object_id=self.deal.pk,
+            action=ActivityLog.Action.STATUS_CHANGED,
+        )
+        self.assertEqual(status_changes.count(), 1)

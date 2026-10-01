@@ -212,9 +212,36 @@ def _apply_confirm_deal(request, organization, deal: Deal) -> Deal:
                     409, "This listing has already been sold to another customer."
                 )
 
+        # A conditional UPDATE, not a blind save of the `deal` object read
+        # before this transaction opened: confirm and decline can both be
+        # in flight for the same deal at once, each holding its own
+        # in-memory copy that still says `pending_confirmation`. An
+        # unconditional `save()` would let both transitions land — the
+        # loser's write still commits, since it only touches its own
+        # columns, leaving a `declined` deal with `completed_at` set, or a
+        # `completed` sale silently undone without ever un-selling the
+        # listing. This is the same guard `inquiries.views._apply_mark_read`
+        # uses for the identical race on marking an inquiry read: the
+        # `WHERE status = pending_confirmation` is re-evaluated against
+        # whatever the *other* transaction actually committed, so only one
+        # of the two can ever match.
+        completed_at = timezone.now()
+        claimed = Deal.objects.filter(
+            pk=deal.pk, status=Deal.Status.PENDING_CONFIRMATION
+        ).update(
+            status=Deal.Status.COMPLETED,
+            completed_at=completed_at,
+            updated_at=completed_at,
+        )
+        if not claimed:
+            # Lost the race — some other request already transitioned this
+            # deal between our read and this write. Report what it actually
+            # became rather than pretending this confirm succeeded.
+            deal.refresh_from_db()
+            _require_pending(deal)
+
         deal.status = Deal.Status.COMPLETED
-        deal.completed_at = timezone.now()
-        deal.save(update_fields=["status", "completed_at", "updated_at"])
+        deal.completed_at = completed_at
 
         # This is the customer's act — they are the ones confirming.
         log_activity(
@@ -270,8 +297,19 @@ def _apply_decline_deal(request, organization, deal: Deal) -> Deal:
     """Sync transactional core of `decline_deal`."""
     _require_pending(deal)
     with transaction.atomic():
+        # Same conditional-UPDATE guard `_apply_confirm_deal` uses, against
+        # the identical race from the other side: a decline racing a
+        # concurrent confirm on the same deal must not land once the confirm
+        # already has.
+        updated_at = timezone.now()
+        claimed = Deal.objects.filter(
+            pk=deal.pk, status=Deal.Status.PENDING_CONFIRMATION
+        ).update(status=Deal.Status.DECLINED, updated_at=updated_at)
+        if not claimed:
+            deal.refresh_from_db()
+            _require_pending(deal)
+
         deal.status = Deal.Status.DECLINED
-        deal.save(update_fields=["status", "updated_at"])
         log_activity(
             request,
             organization,
