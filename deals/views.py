@@ -102,6 +102,19 @@ def _integrity_error(exc: IntegrityError) -> HttpError:
 
 def _apply_create_deal(request, organization, inquiry, data: DealCreateIn) -> Deal:
     """Sync transactional core of `create_deal`."""
+    # The deal has to be the same kind of transaction the listing actually
+    # offers — `Listing.ListingType` and `Deal.DealType` share their values
+    # ("rent"/"sale") for exactly this comparison. Without this, a `sale`
+    # deal_type on an inquiry about a `rent` listing would, on confirmation,
+    # mark a rental listing `sold` (§8.4) and record a sale that was never
+    # actually offered.
+    if data.deal_type != inquiry.listing.listing_type:
+        raise HttpError(
+            400,
+            f"This inquiry is about a '{inquiry.listing.listing_type}' listing; "
+            "deal_type must match.",
+        )
+
     with transaction.atomic():
         if data.deal_type == Deal.DealType.SALE and inquiry.listing_id:
             # A machine can only be sold once. `select_for_update` locks the

@@ -193,6 +193,27 @@ class CreateDealTests(DealTestCase):
     def test_an_unknown_deal_type_is_a_422(self):
         self.assertEqual(self.create_deal(deal_type="lease").status_code, 422)
 
+    def test_a_sale_deal_on_a_rent_listings_inquiry_is_a_400(self):
+        """
+        `self.listing` (and therefore `self.inquiry`) is `rent` by default —
+        otherwise confirming this would mark a rental listing `sold` (§8.4)
+        for a sale that was never actually offered.
+        """
+        response = self.create_deal(deal_type="sale")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(Deal.objects.count(), 0)
+
+    def test_a_rent_deal_on_a_sale_listings_inquiry_is_a_400(self):
+        sale_listing = self.make_listing(
+            listing_type=Listing.ListingType.SALE,
+            price_unit=Listing.PriceUnit.TOTAL,
+            title="MTZ-82 for sale",
+        )
+        sale_inquiry = self.make_inquiry(listing=sale_listing)
+        response = self.create_deal(inquiry=sale_inquiry, deal_type="rent")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(Deal.objects.count(), 0)
+
     def test_a_second_sale_deal_on_the_same_listing_is_a_409(self):
         """
         A machine can only be sold once — a *different* inquiry on the same
