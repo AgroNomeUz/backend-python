@@ -17,6 +17,7 @@ from django.contrib.auth import aauthenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.http import HttpResponse
 from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
@@ -31,6 +32,7 @@ from listings.views import listings_router
 from users.models import Organization, Region, User
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
 from users.services import normalize_phone, username_for_phone
+from users.iam import iam_router
 from users.views import members_router
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
@@ -41,6 +43,13 @@ from .auth import (
     create_signup_token,
     decode_refresh_token,
     decode_signup_token,
+)
+from .cookies import (
+    check_cookie_request,
+    clear_refresh_cookie,
+    refresh_cookie_value,
+    set_refresh_cookie,
+    wants_cookie,
 )
 from .models import RefreshToken
 from .otp import OtpInvalid, OtpThrottled, claim_signup_otp, issue_otp, verify_otp
@@ -68,6 +77,7 @@ api.add_router("/catalog", catalog_router)
 api.add_router("/assets", assets_router)
 api.add_router("/activity", activity_router)
 api.add_router("/members", members_router)
+api.add_router("/iam", iam_router)
 api.add_router("/users", me_router)
 api.add_router("/org", org_router)
 api.add_router("/listings", listings_router)
@@ -85,13 +95,11 @@ api.add_router("/public", public_router)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-async def _issue_tokens(user: User) -> dict:
+async def _new_token_pair(user: User, request, response: HttpResponse) -> dict:
     """
-    A fresh token pair plus the profile the client caches alongside it.
-
-    The user object is built by `users.profile.user_payload`, the same builder
-    behind `GET /users/me` — the frontend refreshes its cached session from
-    that endpoint, so the two must not drift.
+    Mint and store a token pair, delivering the refresh token by the
+    transport the client asked for (body by default, cookie on opt-in — see
+    api/cookies.py).
     """
     access = create_access_token(user.public_id)
     refresh = create_refresh_token(user.public_id)
@@ -100,11 +108,42 @@ async def _issue_tokens(user: User) -> dict:
         token=refresh,
         expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
     )
+    if wants_cookie(request):
+        set_refresh_cookie(response, refresh)
+        refresh = None
     return {
         "access_token": access,
         "refresh_token": refresh,
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
+    }
+
+
+async def _issue_tokens(
+    user: User,
+    request,
+    response: HttpResponse,
+    method: str | None = None,
+) -> dict:
+    """
+    A fresh token pair plus the profile the client caches alongside it.
+
+    The user object is built by `users.profile.user_payload`, the same builder
+    behind `GET /users/me` — the frontend refreshes its cached session from
+    that endpoint, so the two must not drift.
+
+    `method` is set for interactive sign-ins only and stamps `last_login` /
+    `last_login_method`, which the IAM user list shows. A password change
+    re-issues tokens without being a new sign-in, so it passes None.
+    """
+    if method is not None:
+        now = timezone.now()
+        await User.objects.filter(pk=user.pk).aupdate(
+            last_login=now, last_login_method=method
+        )
+        user.last_login, user.last_login_method = now, method
+    return {
+        **await _new_token_pair(user, request, response),
         "user": await user_payload(user),
     }
 
@@ -232,7 +271,7 @@ async def otp_request(request, data: OtpRequestIn):
 
 
 @api.post("/auth/otp/verify", response=OtpVerifyOut, auth=None, tags=["Auth"])
-async def otp_verify(request, data: OtpVerifyIn):
+async def otp_verify(request, data: OtpVerifyIn, response: HttpResponse):
     """
     Exchange a code for either a session or a signup token.
 
@@ -257,11 +296,14 @@ async def otp_verify(request, data: OtpVerifyIn):
     if not user.is_active:
         raise HttpError(403, "Account is disabled")
 
-    return {"status": "authenticated", **await _issue_tokens(user)}
+    return {
+        "status": "authenticated",
+        **await _issue_tokens(user, request, response, User.LoginMethod.OTP),
+    }
 
 
 @api.post("/auth/org/signup", response=AuthOut, auth=None, tags=["Auth"])
-async def org_signup(request, data: OrgSignUpIn):
+async def org_signup(request, data: OrgSignUpIn, response: HttpResponse):
     """
     Create an organization and its admin from a verified phone number.
 
@@ -278,11 +320,11 @@ async def org_signup(request, data: OrgSignUpIn):
     user = await _create_org_account_async(
         request, data, payload["phone"], payload["otp_id"]
     )
-    return await _issue_tokens(user)
+    return await _issue_tokens(user, request, response, User.LoginMethod.SIGNUP)
 
 
 @api.post("/auth/login", response=AuthOut, auth=None, tags=["Auth"])
-async def login(request, data: LoginIn):
+async def login(request, data: LoginIn, response: HttpResponse):
     """
     The secondary route: phone, email or username, plus a password (§0.4).
 
@@ -309,7 +351,7 @@ async def login(request, data: LoginIn):
     if not user.is_active:
         raise HttpError(403, "Account is disabled")
 
-    return await _issue_tokens(user)
+    return await _issue_tokens(user, request, response, User.LoginMethod.PASSWORD)
 
 
 def _change_password(user: User, current_password: str, new_password: str) -> None:
@@ -344,7 +386,7 @@ _change_password_async = sync_to_async(_change_password)
 
 
 @api.post("/auth/password/change", response=AuthOut, tags=["Auth"])
-async def change_password(request, data: PasswordChangeIn):
+async def change_password(request, data: PasswordChangeIn, response: HttpResponse):
     """
     Set your own password — the step that clears `must_change_password`.
 
@@ -354,53 +396,81 @@ async def change_password(request, data: PasswordChangeIn):
     """
     user = request.auth
     await _change_password_async(user, data.current_password, data.new_password)
-    return await _issue_tokens(user)
+    return await _issue_tokens(user, request, response)
+
+
+class RefreshRefused(Exception):
+    """A cookie-borne refresh token was rejected: answer 401 and clear it."""
+
+
+@api.exception_handler(RefreshRefused)
+def _refresh_refused(request, exc):
+    response = api.create_response(request, {"detail": str(exc)}, status=401)
+    clear_refresh_cookie(response)
+    return response
+
+
+def _presented_refresh_token(request, data) -> tuple[str | None, bool]:
+    """
+    The refresh token this request presents, and whether it came from the
+    cookie.
+
+    A token in the body always wins — that is the original contract and what
+    non-browser clients use. The cookie is consulted only when the client
+    opted into cookie transport, and only from a trusted origin.
+    """
+    if data is not None and data.refresh_token:
+        return data.refresh_token, False
+    if wants_cookie(request):
+        check_cookie_request(request)
+        return refresh_cookie_value(request), True
+    return None, False
 
 
 @api.post("/auth/token/refresh", response=TokenOut, auth=None, tags=["Auth"])
-async def token_refresh(request, data: RefreshIn):
+async def token_refresh(request, response: HttpResponse, data: RefreshIn = None):
+    token, from_cookie = _presented_refresh_token(request, data)
+
+    def refuse(message: str):
+        # A dead cookie is cleared so the browser stops presenting it. An
+        # HttpError would drop the Set-Cookie, hence the dedicated exception.
+        if from_cookie:
+            raise RefreshRefused(message)
+        raise HttpError(401, message)
+
+    if not token:
+        raise HttpError(401, "No refresh token presented")
+
     try:
-        decode_refresh_token(data.refresh_token)
+        decode_refresh_token(token)
     except jwt.ExpiredSignatureError:
-        raise HttpError(401, "Refresh token expired")
+        refuse("Refresh token expired")
     except jwt.InvalidTokenError:
-        raise HttpError(401, "Invalid refresh token")
+        refuse("Invalid refresh token")
 
     try:
         stored = await (
             RefreshToken.objects
             .select_related("user")
-            .aget(token=data.refresh_token, is_revoked=False)
+            .aget(token=token, is_revoked=False)
         )
     except RefreshToken.DoesNotExist:
-        raise HttpError(401, "Refresh token not found or already revoked")
+        refuse("Refresh token not found or already revoked")
 
     if stored.expires_at < timezone.now():
-        raise HttpError(401, "Refresh token expired")
+        refuse("Refresh token expired")
+    if not stored.user.is_active:
+        refuse("Account is disabled")
 
     # Rotate: revoke old, issue new pair
     stored.is_revoked = True
     await stored.asave(update_fields=["is_revoked"])
 
-    user = stored.user
-    access = create_access_token(user.public_id)
-    refresh = create_refresh_token(user.public_id)
-    await RefreshToken.objects.acreate(
-        user=user,
-        token=refresh,
-        expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
-    )
-
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "bearer",
-        "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
-    }
+    return await _new_token_pair(stored.user, request, response)
 
 
 @api.post("/auth/logout", response={204: None}, tags=["Auth"])
-async def logout(request, data: LogoutIn):
+async def logout(request, response: HttpResponse, data: LogoutIn = None):
     """
     End this session by revoking its refresh token.
 
@@ -409,7 +479,11 @@ async def logout(request, data: LogoutIn):
     rotated away, is still a 204. The access token stays valid for its
     remaining minutes; it is stateless by design.
     """
-    await RefreshToken.objects.filter(
-        user=request.auth, token=data.refresh_token, is_revoked=False
-    ).aupdate(is_revoked=True)
+    token, from_cookie = _presented_refresh_token(request, data)
+    if token:
+        await RefreshToken.objects.filter(
+            user=request.auth, token=token, is_revoked=False
+        ).aupdate(is_revoked=True)
+    if wants_cookie(request):
+        clear_refresh_cookie(response)
     return 204, None

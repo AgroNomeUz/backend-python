@@ -81,6 +81,20 @@ class User(PublicIdModel, AbstractUser):
         ),
     )
 
+    class LoginMethod(models.TextChoices):
+        OTP = "otp", "SMS code"
+        PASSWORD = "password", "Password"
+        SIGNUP = "signup", "Organization signup"
+
+    # How `last_login` happened. `last_login` itself is Django's own field,
+    # stamped by the auth endpoints on every interactive sign-in (a token
+    # refresh is not a sign-in and touches neither).
+    last_login_method = models.CharField(
+        max_length=16,
+        choices=LoginMethod.choices,
+        blank=True,
+    )
+
     must_change_password = models.BooleanField(
         default=False,
         help_text=(

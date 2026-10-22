@@ -31,7 +31,7 @@ from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery
 from django.shortcuts import aget_object_or_404
 from ninja import Router
 from ninja.errors import HttpError
@@ -45,6 +45,7 @@ from core.views import org_activity
 
 from .models import OrgPermission, Organization, User
 from .permissions import caller_organization, normalize_permissions, require_perm
+from .presets import OWNER_PRESET_ID, PRESETS
 from .schemas import (
     MemberCreateIn,
     MemberCreateOut,
@@ -70,11 +71,22 @@ def org_members(organization: Organization):
     `owned_organization` is selected because `MemberOut` reads
     `is_organization_owner` and `org_permissions` off every row — without it
     the list view fires one extra query per member.
+
+    `last_activity_at` is the member's newest audit row in this organization,
+    annotated in the same query for the IAM user list. The subquery rides the
+    `(organization, -created_at)` index the log already carries.
     """
+    newest_action = (
+        ActivityLog.objects
+        .filter(organization=organization, actor=OuterRef("pk"))
+        .order_by("-created_at")
+        .values("created_at")[:1]
+    )
     return (
         User.objects
         .filter(organization=organization)
         .select_related("owned_organization")
+        .annotate(last_activity_at=Subquery(newest_action))
         .order_by("date_joined")
     )
 
@@ -184,8 +196,14 @@ async def list_members(
     search: str | None = None,
     is_active: bool | None = None,
     permission: str | None = None,
+    preset: str | None = None,
 ):
-    """Everyone in the caller's organization. Readable by any member."""
+    """
+    Everyone in the caller's organization. Readable by any member.
+
+    `preset` filters by the matched role preset (users/presets.py): a preset
+    id, `owner`, or `custom` for hand-tuned sets.
+    """
     qs = org_members(caller_organization(request))
 
     if search:
@@ -203,8 +221,31 @@ async def list_members(
         # Matches the stored set only — the owner holds every permission
         # implicitly and is deliberately not surfaced by this filter.
         qs = qs.filter(permissions__contains=[permission])
+    if preset:
+        qs = filter_by_preset(qs, preset)
 
     return qs
+
+
+def filter_by_preset(qs, preset_id: str):
+    """
+    Narrow a roster to members whose permissions match `preset_id` exactly.
+
+    Stored sets are always sorted (`normalize_permissions`), so array
+    equality against the preset's sorted codes is an exact-set match.
+    An unknown id is a client bug and answers 400, not an empty page.
+    """
+    if preset_id == OWNER_PRESET_ID:
+        return qs.filter(owned_organization__isnull=False)
+    staff = qs.filter(owned_organization__isnull=True)
+    if preset_id == "custom":
+        for p in PRESETS:
+            staff = staff.exclude(permissions=list(p.permissions))
+        return staff
+    match = next((p for p in PRESETS if p.id == preset_id), None)
+    if match is None:
+        raise HttpError(400, f"Unknown preset '{preset_id}'")
+    return staff.filter(permissions=list(match.permissions))
 
 
 def _apply_create_member(request, organization, data: MemberCreateIn, password: str) -> User:
