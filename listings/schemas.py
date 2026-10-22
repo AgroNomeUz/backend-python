@@ -121,7 +121,14 @@ class ListingOut(Schema):
     @staticmethod
     def resolve_owner(obj) -> dict:
         org = obj.organization
-        return {"name": org.name, "region": org.region, "is_verified": org.is_verified}
+        # "public_id", not "id" — matches PublicProviderOut.id's alias; a
+        # hand-built dict validates against the alias, not the field name.
+        return {
+            "public_id": org.public_id,
+            "name": org.name,
+            "region": org.region,
+            "is_verified": org.is_verified,
+        }
 
 
 # Column widths, restated here so pydantic refuses an over-long value before

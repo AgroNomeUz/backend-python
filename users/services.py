@@ -72,3 +72,32 @@ def username_for_phone(phone: str) -> str:
     `UnicodeUsernameValidator`, which doesn't allow it.
     """
     return _free_username(f"u{slugify(phone)}")
+
+
+def organization_display_name(organization) -> str:
+    """
+    The name to show a stranger for this organization, on a deal or a review
+    (seller-profile-proposal.md §2's display-name rule).
+
+    A `legal_entity` shows its registered name. An `individual` is a sole
+    trader modelled as an organization with one member (§0.1) — its plain
+    name *is* a person's name, and publishing it in full for having rented
+    one tractor is a real privacy cost, so it reads back as first name +
+    last initial instead, off the owner's `full_name`.
+
+    Callers must have `owner` joined (e.g. `select_related("owner")`) —
+    this never lazily loads it, for the same reason every resolver in
+    `deals`/`users` avoids one: an async response cannot.
+    """
+    from .models import Organization
+
+    if organization.entity_type == Organization.EntityType.LEGAL_ENTITY:
+        return organization.name
+
+    full_name = (organization.owner.get_full_name() or "").strip()
+    if not full_name:
+        return organization.name
+    parts = full_name.split()
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} {parts[-1][0]}."

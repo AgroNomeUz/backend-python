@@ -177,6 +177,7 @@ async def list_listings(
     min_price: float | None = None,
     max_price: float | None = None,
     verified_only: bool | None = None,
+    owner: UUID | None = None,
     sort: str | None = None,
 ):
     """
@@ -226,6 +227,11 @@ async def list_listings(
         qs = qs.filter(price__lte=max_price)
     if verified_only:
         qs = qs.filter(organization__is_verified=True)
+    if owner:
+        # A bad or foreign id yields an empty page, same as every other
+        # filter here — this is a filter, not a single-object lookup, so it
+        # never 404s (seller-profile-proposal.md §8.1).
+        qs = qs.filter(organization__public_id=owner)
 
     if sort:
         if sort not in SORT_OPTIONS:
@@ -496,6 +502,23 @@ def _apply_update_listing(request, organization, listing: Listing, data: Listing
         raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
 
     before = listing_snapshot(listing)
+
+    if "status" in fields:
+        # `sold` is system-managed, not a publication state an owner toggles
+        # (§8.4 of seller-profile-proposal.md): it is set once, by a
+        # confirmed sale deal (`deals.views._apply_confirm_deal`), and must
+        # stay set — reopening it here would let a listing "unsell" itself
+        # and return to the public market after a completed transaction, and
+        # setting it here directly would let a listing claim a sale that
+        # never went through the deal/review pipeline at all.
+        if listing.status == Listing.Status.SOLD and fields["status"] != Listing.Status.SOLD:
+            raise HttpError(409, "A sold listing's status cannot be changed.")
+        if fields["status"] == Listing.Status.SOLD and listing.status != Listing.Status.SOLD:
+            raise HttpError(
+                400,
+                "Listings are marked sold automatically when a sale deal is "
+                "confirmed, not set directly — see POST /deals/{id}/confirm.",
+            )
 
     if "region_id" in fields:
         region_id = fields.pop("region_id")

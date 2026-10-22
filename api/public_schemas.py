@@ -25,6 +25,7 @@ class PublicRegionOut(Schema):
 class PublicProviderOut(Schema):
     """The owning organization, stripped down to what's safe to show."""
 
+    id: UUID = Field(alias="public_id")
     name: str
     region: PublicRegionOut | None = None
     is_verified: bool
@@ -50,7 +51,16 @@ class PublicListingOut(Schema):
     @staticmethod
     def resolve_provider(obj) -> dict:
         org = obj.organization
-        return {"name": org.name, "region": org.region, "is_verified": org.is_verified}
+        # Keyed "public_id", not "id": the schema's `id` field carries
+        # `Field(alias="public_id")`, and a hand-built dict (unlike an ORM
+        # instance read through `from_attributes`) is validated against the
+        # alias, not the field name.
+        return {
+            "public_id": org.public_id,
+            "name": org.name,
+            "region": org.region,
+            "is_verified": org.is_verified,
+        }
 
     @staticmethod
     def resolve_price(obj) -> dict | None:
