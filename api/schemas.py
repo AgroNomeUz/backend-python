@@ -66,11 +66,13 @@ class LoginIn(Schema):
 
 
 class RefreshIn(Schema):
-    refresh_token: str
+    # Optional for cookie clients (`X-Auth-Transport: cookie`), which send
+    # `{}` and let the HttpOnly cookie carry the token. See api/cookies.py.
+    refresh_token: str | None = None
 
 
 class LogoutIn(Schema):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 # ── Phone + OTP ───────────────────────────────────────────────────────────────
@@ -152,7 +154,9 @@ class PasswordChangeIn(Schema):
 
 class TokenOut(Schema):
     access_token: str
-    refresh_token: str
+    # Null when the client asked for cookie transport: the token is then in
+    # the HttpOnly `Set-Cookie` and deliberately not readable by script.
+    refresh_token: str | None
     token_type: str = "bearer"
     expires_in: int  # seconds until access token expiry
 

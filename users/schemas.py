@@ -36,6 +36,25 @@ class MemberOut(Schema):
     must_change_password: bool
     is_active: bool
     date_joined: datetime
+    # Matched, never stored — see users/presets.py. `owner` for the owner,
+    # null when the permission set is hand-tuned ("Custom").
+    preset: str | None = None
+    # Last interactive sign-in (OTP, password or signup — not a refresh),
+    # and how it happened: "otp", "password", "signup", or "" if never.
+    last_login: datetime | None = None
+    last_login_method: str = ""
+    # Newest audit row this member is the actor of, inside this org.
+    last_activity_at: datetime | None = None
+
+    @staticmethod
+    def resolve_preset(obj) -> str | None:
+        from .presets import match_preset
+
+        return match_preset(obj)
+
+    @staticmethod
+    def resolve_last_activity_at(obj) -> datetime | None:
+        return getattr(obj, "last_activity_at", None)
 
 
 class MemberCreateIn(Schema):

@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 from pathlib import Path
 import os
 
+from corsheaders.defaults import default_headers as cors_default_headers
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -109,6 +111,27 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
     if origin.strip()
 ]
+
+# The console (console.agronome.uz) keeps its refresh token in an HttpOnly
+# cookie shared across *.agronome.uz — see api/cookies.py. That makes the
+# refresh/logout calls credentialed, so CORS must allow credentials and the
+# custom header the client uses to opt in.
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = (*cors_default_headers, "x-auth-transport")
+
+AUTH_REFRESH_COOKIE_NAME = os.environ.get("AUTH_REFRESH_COOKIE_NAME", "agro_refresh")
+# ".agronome.uz" in production so agronome.uz and console.agronome.uz share
+# one session; unset (host-only) in development.
+AUTH_REFRESH_COOKIE_DOMAIN = os.environ.get("AUTH_REFRESH_COOKIE_DOMAIN") or None
+# Only the auth endpoints ever need to see it.
+AUTH_REFRESH_COOKIE_PATH = "/api/v1/auth/"
+# Lax is enough: console → api is same-site, and the cookie is only honoured
+# alongside a custom header (no simple cross-site request can carry one).
+AUTH_REFRESH_COOKIE_SAMESITE = "Lax"
+AUTH_REFRESH_COOKIE_SECURE = os.environ.get(
+    "AUTH_REFRESH_COOKIE_SECURE",
+    "true" if ENVIRONMENT == "production" else "false",
+).lower() in ("true", "1", "yes")
 
 CSRF_TRUSTED_ORIGINS = [
     "https://api.agronome.uz",
