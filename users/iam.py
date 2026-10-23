@@ -35,6 +35,10 @@ _PERMISSION_INFO = {
         "inquiries", "Inquiries",
         "Send inquiries, reply in threads and mark them read.",
     ),
+    OrgPermission.MANAGE_FARMS: (
+        "farms", "Farms",
+        "Create and edit farms, fields, boundaries, seasons and crop zones.",
+    ),
 }
 
 
