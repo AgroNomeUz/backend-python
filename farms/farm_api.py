@@ -113,6 +113,8 @@ async def get_cluster(request, cluster_id: UUID):
 
 
 def _apply_update_cluster(request, organization, cluster, data: ClusterUpdateIn):
+    if "name" in data.model_fields_set and data.name is None:
+        raise HttpError(400, "name cannot be null")
     fields = {
         name: value
         for name, value in data.dict(exclude_unset=True).items()
@@ -150,19 +152,27 @@ async def update_cluster(request, cluster_id: UUID, data: ClusterUpdateIn):
 
 
 def _apply_delete_cluster(request, organization, cluster) -> None:
-    with transaction.atomic():
-        # A composite FK cannot SET NULL just one of its two columns, so the
-        # farms are detached explicitly before the cluster goes.
-        detached = Farm.objects.filter(
-            organization=organization, cluster=cluster
-        ).update(cluster=None)
-        changes = diff(snapshot(cluster, CLUSTER_AUDIT_FIELDS), {})
-        if detached:
-            changes["farms_detached"] = {"from": detached, "to": 0}
-        log_activity(
-            request, organization, ActivityLog.Action.DELETED, cluster, changes=changes
-        )
-        cluster.delete()
+    try:
+        with transaction.atomic():
+            # A composite FK cannot SET NULL just one of its two columns, so the
+            # farms are detached explicitly before the cluster goes.
+            detached = Farm.objects.filter(
+                organization=organization, cluster=cluster
+            ).update(cluster=None)
+            changes = diff(snapshot(cluster, CLUSTER_AUDIT_FIELDS), {})
+            if detached:
+                changes["farms_detached"] = {"from": detached, "to": 0}
+            log_activity(
+                request,
+                organization,
+                ActivityLog.Action.DELETED,
+                cluster,
+                changes=changes,
+            )
+            cluster.delete()
+    except IntegrityError:
+        # A farm joined the cluster after the detach (a concurrent write).
+        raise HttpError(409, "This cluster is still referenced by other records")
 
 
 @clusters_router.delete("/{cluster_id}", response={204: None})
@@ -321,8 +331,10 @@ async def get_farm(request, farm_id: UUID):
 
 def _apply_update_farm(request, organization, farm: Farm, data: FarmUpdateIn) -> Farm:
     fields = data.dict(exclude_unset=True)
-    # name/address/notes cannot be nulled; for them null means "not sent".
-    for name in ("name", "address", "notes"):
+    if "name" in fields and fields["name"] is None:
+        raise HttpError(400, "name cannot be null")
+    # address/notes cannot be nulled; for them null means "not sent".
+    for name in ("address", "notes"):
         if name in fields and fields[name] is None:
             del fields[name]
     if not fields:
@@ -381,7 +393,7 @@ def _apply_delete_farm(request, organization, farm: Farm) -> None:
             # References are generic, so no cascade reaches them.
             references_of(farm).delete()
             farm.delete()
-    except (ProtectedError, RestrictedError):
+    except (ProtectedError, RestrictedError, IntegrityError):
         raise HttpError(409, "This farm is still referenced by other records")
 
 

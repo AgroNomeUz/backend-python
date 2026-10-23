@@ -801,3 +801,175 @@ def _multi(lon: float = 69.0):
     import json
 
     return GEOSGeometry(json.dumps(multipolygon_geojson(lon=lon)), srid=4326)
+
+
+def _with_z(geojson: dict) -> dict:
+    """The same GeoJSON with an altitude on every position."""
+    def lift(node):
+        if node and isinstance(node[0], (int, float)):
+            return [*node[:2], 100]
+        return [lift(child) for child in node]
+
+    return {**geojson, "coordinates": lift(geojson["coordinates"])}
+
+
+def _box(west, south, east, north) -> dict:
+    ring = [[west, south], [east, south], [east, north], [west, north], [west, south]]
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
+# The whole globe (PostGIS cannot measure it), and a measurable box far past the column.
+WORLD = _box(-180, -90, 180, 90)
+HUGE = _box(-170, -80, 170, 80)
+
+
+class ExternalReferenceColdCacheTests(FieldApiCase):
+    def test_listing_references_works_with_a_cold_content_type_cache(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        field = self.make_field()
+        zone = self.make_zone(field)
+        for base, target in ((FIELDS, field), (ZONES, zone)):
+            ContentType.objects.clear_cache()
+            response = self.get(f"{base}/{target.public_id}/external-references")
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual(response.json(), [])
+
+
+class ThreeDimensionalGeometryTests(FieldApiCase):
+    def test_altitude_is_dropped_everywhere(self):
+        field = self.make_field()
+        z_polygon = _with_z(polygon_geojson())
+
+        posted = self.post(f"{FIELDS}/{field.public_id}/boundaries", {"geometry": z_polygon})
+        self.assertEqual(posted.status_code, 201, posted.content)
+        self.assertFalse(FieldBoundary.objects.get().geometry.hasz)
+        self.assertEqual(len(posted.json()["geometry"]["coordinates"][0][0][0]), 2)
+
+        created = self.post(
+            FIELDS,
+            {"farm_id": str(self.a_farm.public_id), "name": "Z", "boundary": z_polygon},
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertFalse(
+            FieldBoundary.objects.get(field__public_id=created.json()["id"]).geometry.hasz
+        )
+
+        zone = self.post(
+            ZONES,
+            {
+                "field_id": str(field.public_id),
+                "season_id": str(self.a_season.public_id),
+                "crop_code": "TRZAX",
+                "crop_name": "Wheat",
+                "geometry": _with_z(multipolygon_geojson()),
+            },
+        )
+        self.assertEqual(zone.status_code, 201, zone.content)
+        self.assertFalse(CropZone.objects.get().geometry.hasz)
+
+
+class AreaBoundsTests(FieldApiCase):
+    def test_huge_quantity_is_422(self):
+        body = {"farm_id": str(self.a_farm.public_id), "name": "Big"}
+        for area in (
+            {"value": "1000000000", "unit": "har"},
+            {"value": "99999999999999", "unit": "har"},
+            {"value": "10000000000", "unit": "m2"},
+            {"value": "1e999", "unit": "har"},
+            {"value": "0.00001", "unit": "har"},
+        ):
+            self.assertEqual(self.post(FIELDS, {**body, "area": area}).status_code, 422, area)
+        field = self.make_field(name="Ok")
+        self.assertEqual(
+            self.patch(
+                f"{FIELDS}/{field.public_id}", {"area": {"value": "1000000000", "unit": "har"}}
+            ).status_code,
+            422,
+        )
+        zone = self.post(
+            ZONES,
+            {
+                "field_id": str(field.public_id),
+                "season_id": str(self.a_season.public_id),
+                "crop_code": "TRZAX",
+                "crop_name": "Wheat",
+                "area": {"value": "1000000000", "unit": "har"},
+            },
+        )
+        self.assertEqual(zone.status_code, 422)
+        edge = self.post(FIELDS, {**body, "area": {"value": "999999999.9999", "unit": "har"}})
+        self.assertEqual(edge.status_code, 201, edge.content)
+
+    def test_boundary_too_large_is_400(self):
+        field = self.make_field()
+        for index, geometry in enumerate((WORLD, HUGE)):
+            response = self.post(
+                f"{FIELDS}/{field.public_id}/boundaries", {"geometry": geometry}
+            )
+            self.assertEqual(response.status_code, 400, response.content)
+            created = self.post(
+                FIELDS,
+                {
+                    "farm_id": str(self.a_farm.public_id),
+                    "name": "World",
+                    "boundary": geometry,
+                },
+            )
+            self.assertEqual(created.status_code, 400, created.content)
+        self.assertFalse(FieldBoundary.objects.exists())
+        self.assertFalse(Field.objects.filter(name="World").exists())
+        self.assertEqual(self.activity_count(), 0)
+
+
+class ReferenceCleanupTests(FieldApiCase):
+    def test_deleting_a_field_or_zone_removes_its_references(self):
+        field = self.make_field()
+        zone = self.make_zone(field)
+        for base, target in ((ZONES, zone), (FIELDS, field)):
+            url = f"{base}/{target.public_id}"
+            self.post(f"{url}/external-references", {"system": "adapt", "external_id": "1"})
+            self.assertEqual(ExternalReference.objects.count(), 1)
+            self.assertEqual(self.delete(url).status_code, 204)
+            self.assertEqual(ExternalReference.objects.count(), 0)
+
+
+class AreaQuantisationTests(FieldApiCase):
+    def test_patching_a_sub_column_difference_is_a_noop(self):
+        field = self.make_field(area="5")
+        response = self.patch(
+            f"{FIELDS}/{field.public_id}", {"area": {"value": "5.00001", "unit": "har"}}
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.activity_count(), 0)
+
+        zone = self.make_zone(field, area="5")
+        response = self.patch(
+            f"{ZONES}/{zone.public_id}", {"area": {"value": "5.00001", "unit": "har"}}
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.activity_count(), 0)
+
+    def test_create_stores_and_audits_the_quantised_area(self):
+        response = self.post(
+            FIELDS,
+            {
+                "farm_id": str(self.a_farm.public_id),
+                "name": "Q",
+                "area": {"value": "5.00005", "unit": "har"},
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        log = ActivityLog.objects.get(organization=self.a_org)
+        self.assertEqual(str(log.changes["area"]["to"]), "5.0001")
+
+
+class WhitespaceNameTests(FieldApiCase):
+    def test_blank_field_name_is_rejected(self):
+        farm = str(self.a_farm.public_id)
+        self.assertEqual(self.post(FIELDS, {"farm_id": farm, "name": "   "}).status_code, 422)
+        field = self.make_field()
+        self.assertEqual(self.patch(f"{FIELDS}/{field.public_id}", {"name": " \t "}).status_code, 422)
+        self.assertEqual(Field.objects.get().name, "North")
+        created = self.post(FIELDS, {"farm_id": farm, "name": "  Padded  "})
+        self.assertEqual(created.json()["name"], "Padded")

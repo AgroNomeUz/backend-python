@@ -9,18 +9,26 @@ and the ADAPT-shaped edge is where standards-shaped data is read and written.
 """
 
 import json
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Annotated
 
 from django.contrib.gis.gdal import GDALException
-from django.contrib.gis.geos import GEOSException, GEOSGeometry, MultiPolygon, Point, Polygon
+from django.contrib.gis.geos import (
+    GEOSException,
+    GEOSGeometry,
+    MultiPolygon,
+    Point,
+    Polygon,
+    WKBWriter,
+)
 from ninja import Schema
 from ninja.errors import HttpError
-from pydantic import field_validator
+from pydantic import StringConstraints, field_validator, model_validator
 
 from users.models import OrgPermission, Organization
 from users.permissions import caller_organization, require_perm
 
-from .units import AREA_UNITS, HECTARE
+from .units import AREA_UNITS, HECTARE, MAX_AREA_HECTARES, to_hectares
 
 
 def writable_organization(request) -> Organization:
@@ -33,6 +41,22 @@ def writable_organization(request) -> Organization:
     organization = caller_organization(request)
     require_perm(request, OrgPermission.MANAGE_FARMS)
     return organization
+
+
+def _name(max_length: int):
+    """A required name: stripped first, so whitespace alone is empty."""
+    return Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=max_length),
+    ]
+
+
+Name255 = _name(255)
+Name100 = _name(100)
+
+
+# Largest value a DecimalField(14, 4) holds.
+_COLUMN_LIMIT = Decimal(10) ** 10
 
 
 class Quantity(Schema):
@@ -54,6 +78,24 @@ class Quantity(Schema):
         if value <= 0:
             raise ValueError("An area must be positive.")
         return value
+
+    @model_validator(mode="after")
+    def _fits_the_column(self):
+        def too_large(value: Decimal) -> bool:
+            return value >= _COLUMN_LIMIT or (
+                to_hectares(value, self.unit) >= MAX_AREA_HECTARES
+            )
+
+        if too_large(self.value):
+            raise ValueError("The area is too large.")
+        # Quantise to the column's 4 decimals here, so what is diffed and
+        # audited is what gets stored.
+        self.value = self.value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        if self.value <= 0:
+            raise ValueError("An area must be positive.")
+        if too_large(self.value):
+            raise ValueError("The area is too large.")
+        return self
 
 
 def quantity_out(value, unit) -> dict | None:
@@ -89,6 +131,9 @@ def geometry_from_geojson(data: dict | None, *, expect: str = "polygon"):
 
     if geometry.empty:
         raise HttpError(400, "Geometry is empty")
+    if geometry.hasz:
+        # The columns are 2D; an altitude is dropped, not rejected.
+        geometry = GEOSGeometry(WKBWriter(dim=2).write(geometry), srid=4326)
     if not geometry.valid:
         raise HttpError(400, f"Geometry is not valid: {geometry.valid_reason}")
     xmin, ymin, xmax, ymax = geometry.extent

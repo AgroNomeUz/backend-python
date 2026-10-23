@@ -2,13 +2,13 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.contrib.gis.db import models as gis_models
-from django.db import connection, models
+from django.db import InternalError, connection, models
 from django.core.exceptions import ValidationError
 
 from core.models import PublicIdModel
 from users.models import Organization
 
-from .units import AREA_UNIT_CHOICES, HECTARE, validate_area_unit
+from .units import AREA_UNIT_CHOICES, HECTARE, MAX_AREA_HECTARES, validate_area_unit
 
 
 # =============================================================================
@@ -32,15 +32,22 @@ def geometry_area_hectares(geometry) -> Decimal:
     Done with PostGIS `ST_Area(geography)`, not `geometry.area`: that one is in
     square degrees, which means nothing for a field.
     """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT ST_Area(ST_GeomFromEWKT(%s)::geography)",
-            [f"SRID=4326;{geometry.wkt}"],
-        )
-        square_metres = Decimal(str(cursor.fetchone()[0]))
-    return (square_metres / Decimal("10000")).quantize(
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT ST_Area(ST_GeomFromEWKT(%s)::geography)",
+                [f"SRID=4326;{geometry.wkt}"],
+            )
+            square_metres = Decimal(str(cursor.fetchone()[0]))
+    except InternalError:
+        # PostGIS cannot measure e.g. an edge spanning 180 degrees of longitude.
+        raise ValidationError("The geometry's area cannot be measured.")
+    hectares = (square_metres / Decimal("10000")).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     )
+    if hectares >= MAX_AREA_HECTARES:
+        raise ValidationError("The geometry's area is too large.")
+    return hectares
 
 
 class FarmCluster(PublicIdModel):
@@ -310,7 +317,7 @@ class CropZone(PublicIdModel):
     notes = models.TextField(blank=True)
 
     class Meta:
-        ordering = ["-season__start_date", "field", "crop_code"]
+        ordering = ["-season__start_date", "field", "crop_code", "id"]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(planting_date__isnull=True)

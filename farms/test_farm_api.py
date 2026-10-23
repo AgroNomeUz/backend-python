@@ -539,3 +539,82 @@ class SeasonApiTests(FarmApiCase):
         self.assert_needs_permission(self.delete(f"/{season.public_id}", user=self.a_member))
         self.assertEqual(self.get(f"/{season.public_id}", user=self.a_member).status_code, 200)
         self.assertEqual(self.audit().count(), 0)
+
+
+class ReviewFixTests(FarmApiCase):
+    base = "farms"
+
+    def test_listing_farm_references_works_with_a_cold_content_type_cache(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        farm = self.make_farm()
+        ContentType.objects.clear_cache()
+        response = self.get(f"/{farm.public_id}/external-references")
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_farm_location_altitude_is_dropped(self):
+        point = {"type": "Point", "coordinates": [69.24, 41.31, 450]}
+        response = self.post("", {"name": "Z", "location": point})
+        self.assertEqual(response.status_code, 201, response.content)
+        farm = Farm.objects.get()
+        self.assertFalse(farm.location.hasz)
+        other = self.make_farm(name="Other")
+        response = self.patch(f"/{other.public_id}", {"location": point})
+        self.assertEqual(response.status_code, 200, response.content)
+        other.refresh_from_db()
+        self.assertFalse(other.location.hasz)
+
+    def test_whitespace_names_are_rejected(self):
+        for base in ("farms", "farm-clusters", "seasons"):
+            self.base = base
+            body = {"name": "   "}
+            if base == "seasons":
+                body.update(start_date="2026-01-01", end_date="2026-12-31")
+            self.assertEqual(self.post("", body).status_code, 422, base)
+        self.base = "farms"
+        farm = self.make_farm()
+        self.assertEqual(self.patch(f"/{farm.public_id}", {"name": "  "}).status_code, 422)
+        self.base = "farm-clusters"
+        cluster = FarmCluster.objects.create(organization=self.a_org, name="C")
+        self.assertEqual(self.patch(f"/{cluster.public_id}", {"name": "  "}).status_code, 422)
+        self.base = "seasons"
+        season = self.make_season()
+        self.assertEqual(self.patch(f"/{season.public_id}", {"name": "  "}).status_code, 422)
+        self.assertEqual(self.audit().count(), 0)
+
+    def test_patch_null_name_is_400(self):
+        farm = self.make_farm()
+        self.assertEqual(self.patch(f"/{farm.public_id}", {"name": None}).status_code, 400)
+        self.base = "farm-clusters"
+        cluster = FarmCluster.objects.create(organization=self.a_org, name="C")
+        self.assertEqual(self.patch(f"/{cluster.public_id}", {"name": None}).status_code, 400)
+        self.assertEqual(self.audit().count(), 0)
+
+    def test_delete_farm_integrity_error_is_409(self):
+        from unittest import mock
+
+        from django.db import IntegrityError
+
+        farm = self.make_farm()
+        with mock.patch(
+            "farms.farm_api.references_of", side_effect=IntegrityError("fk violation")
+        ):
+            response = self.delete(f"/{farm.public_id}")
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(Farm.objects.filter(pk=farm.pk).exists())
+        self.assertEqual(self.audit().count(), 0)
+
+    def test_delete_cluster_integrity_error_is_409(self):
+        from unittest import mock
+
+        from django.db import IntegrityError
+
+        self.base = "farm-clusters"
+        cluster = FarmCluster.objects.create(organization=self.a_org, name="C")
+        with mock.patch.object(
+            FarmCluster, "delete", side_effect=IntegrityError("fk violation")
+        ):
+            response = self.delete(f"/{cluster.public_id}")
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(FarmCluster.objects.filter(pk=cluster.pk).exists())
+        self.assertEqual(self.audit().count(), 0)

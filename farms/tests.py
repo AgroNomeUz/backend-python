@@ -305,6 +305,9 @@ class CropZoneTests(InvariantTestCase):
         # One date alone is fine.
         self.make(expected_harvest_date=date(2026, 4, 1))
 
+    def test_ordering_ends_with_a_unique_tie_break(self):
+        self.assertEqual(CropZone._meta.ordering[-1], "id")
+
     def test_area_must_be_positive(self):
         self.assertRejected(lambda: self.make(area=Decimal("0")))
 

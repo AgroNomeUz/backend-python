@@ -19,6 +19,7 @@ from datetime import date, timedelta
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Prefetch, ProtectedError, Q, RestrictedError
 from django.shortcuts import aget_object_or_404, get_object_or_404
@@ -34,7 +35,7 @@ from users.models import Organization
 from users.permissions import caller_organization
 
 from .common import geometry_from_geojson, writable_organization
-from .external_refs import add_reference_routes, attach_references
+from .external_refs import add_reference_routes, attach_references, references_of
 from .field_schemas import (
     BoundaryIn,
     BoundaryOut,
@@ -175,13 +176,17 @@ def _insert_boundary(
     request, field: Field, geometry, valid_from: date, source: str
 ) -> FieldBoundary:
     """Create a boundary row; the caller has already closed any open one."""
-    return FieldBoundary.objects.create(
-        field=field,
-        geometry=geometry,
-        valid_from=valid_from,
-        source=source,
-        created_by=request.auth,
-    )
+    try:
+        return FieldBoundary.objects.create(
+            field=field,
+            geometry=geometry,
+            valid_from=valid_from,
+            source=source,
+            created_by=request.auth,
+        )
+    except ValidationError as exc:
+        # The computed area does not fit the column.
+        raise HttpError(400, "; ".join(exc.messages))
 
 
 def _apply_create_field(request, organization, data: FieldIn) -> Field:
@@ -294,6 +299,8 @@ def _apply_delete_field(request, organization, field: Field) -> None:
                 field,
                 changes=diff(field_snapshot(field), {}),
             )
+            # References are generic, so no cascade reaches them.
+            references_of(field).delete()
             field.delete()
     except (ProtectedError, RestrictedError, IntegrityError):
         raise HttpError(409, "This field is still referenced; remove its crop zones first.")
@@ -582,6 +589,7 @@ def _apply_delete_crop_zone(request, organization, zone: CropZone) -> None:
                 zone,
                 changes=diff(crop_zone_snapshot(zone), {}),
             )
+            references_of(zone).delete()
             zone.delete()
     except (ProtectedError, RestrictedError, IntegrityError):
         raise HttpError(409, "This crop zone is still referenced and cannot be deleted.")

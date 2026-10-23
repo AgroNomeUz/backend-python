@@ -11,7 +11,7 @@ from uuid import UUID
 
 from ninja import Field, Schema
 
-from .common import Quantity, geojson_out, quantity_out
+from .common import Name255, Quantity, geojson_out, quantity_out
 from .external_refs import ExternalReferenceOut
 from .models import FieldBoundary
 
@@ -66,7 +66,7 @@ class BoundaryOut(CurrentBoundaryOut):
 
 class FieldIn(Schema):
     farm_id: UUID
-    name: str = Field(..., min_length=1, max_length=255)
+    name: Name255
     soato: str = Field("", max_length=20)
     # Given explicitly or left null; never derived from the boundary behind
     # the user's back.
@@ -78,7 +78,7 @@ class FieldIn(Schema):
 
 
 class FieldUpdateIn(Schema):
-    name: str | None = Field(None, min_length=1, max_length=255)
+    name: Name255 | None = None
     soato: str | None = Field(None, max_length=20)
     area: Quantity | None = None
     soil_type: str | None = Field(None, max_length=100)

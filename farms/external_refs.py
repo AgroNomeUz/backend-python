@@ -169,7 +169,8 @@ def add_reference_routes(router, resource: str, target_queryset) -> None:
         target = await aget_object_or_404(
             target_queryset(caller_organization(request)), public_id=target_id
         )
-        return [ref async for ref in references_of(target)]
+        # `references_of` resolves the ContentType, which may hit the database.
+        return await sync_to_async(lambda: list(references_of(target)))()
 
     @router.post(
         "/{target_id}/external-references",

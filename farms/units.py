@@ -21,6 +21,9 @@ AREA_UNITS = {code for code, _ in AREA_UNIT_CHOICES}
 
 _M2_PER_HECTARE = Decimal("10000")
 
+# No real field reaches this; it keeps every stored area inside DecimalField(14, 4).
+MAX_AREA_HECTARES = Decimal(10) ** 9
+
 
 def validate_area_unit(value: str) -> None:
     """Field validator: reject any code that is not an allowed area unit."""

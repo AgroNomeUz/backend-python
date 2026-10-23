@@ -9,7 +9,7 @@ from uuid import UUID
 
 from ninja import Field, Schema
 
-from .common import Quantity, geojson_out, quantity_out
+from .common import Name100, Name255, Quantity, geojson_out, quantity_out
 from .external_refs import ExternalReferenceOut
 from .units import HECTARE, to_hectares
 
@@ -30,12 +30,12 @@ class RegionRefOut(Schema):
 # ── clusters ──────────────────────────────────────────────────────────────────
 
 class ClusterIn(Schema):
-    name: str = Field(min_length=1, max_length=255)
+    name: Name255
     description: str = ""
 
 
 class ClusterUpdateIn(Schema):
-    name: str | None = Field(None, min_length=1, max_length=255)
+    name: Name255 | None = None
     description: str | None = None
 
 
@@ -50,7 +50,7 @@ class ClusterOut(Schema):
 # ── farms ─────────────────────────────────────────────────────────────────────
 
 class FarmIn(Schema):
-    name: str = Field(min_length=1, max_length=255)
+    name: Name255
     address: str = Field("", max_length=512)
     notes: str = ""
     cluster_id: UUID | None = None
@@ -60,7 +60,7 @@ class FarmIn(Schema):
 
 
 class FarmUpdateIn(Schema):
-    name: str | None = Field(None, min_length=1, max_length=255)
+    name: Name255 | None = None
     address: str | None = Field(None, max_length=512)
     notes: str | None = None
     cluster_id: UUID | None = None
@@ -103,13 +103,13 @@ class FarmOut(Schema):
 # ── seasons ───────────────────────────────────────────────────────────────────
 
 class SeasonIn(Schema):
-    name: str = Field(min_length=1, max_length=100)
+    name: Name100
     start_date: date
     end_date: date
 
 
 class SeasonUpdateIn(Schema):
-    name: str | None = Field(None, min_length=1, max_length=100)
+    name: Name100 | None = None
     start_date: date | None = None
     end_date: date | None = None
 
