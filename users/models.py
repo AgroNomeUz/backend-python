@@ -30,6 +30,9 @@ class OrgPermission(models.TextChoices):
     # the whole domain, gating all four writes in `deals` (turning an inquiry
     # into a deal is the provider side's write and needs it too).
     MANAGE_DEALS = "deals.manage", "Manage deals"
+    # Farms, fields, boundaries, seasons and crop zones: one code for the
+    # whole farms domain.
+    MANAGE_FARMS = "farms.manage", "Manage farms"
 
 
 class User(PublicIdModel, AbstractUser):
