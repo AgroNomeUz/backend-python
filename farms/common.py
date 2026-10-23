@@ -11,6 +11,7 @@ and the ADAPT-shaped edge is where standards-shaped data is read and written.
 import json
 from decimal import Decimal
 
+from django.contrib.gis.gdal import GDALException
 from django.contrib.gis.geos import GEOSException, GEOSGeometry, MultiPolygon, Point, Polygon
 from ninja import Schema
 from ninja.errors import HttpError
@@ -74,7 +75,7 @@ def geometry_from_geojson(data: dict | None, *, expect: str = "polygon"):
         return None
     try:
         geometry = GEOSGeometry(json.dumps(data), srid=4326)
-    except (GEOSException, ValueError, TypeError):
+    except (GEOSException, GDALException, ValueError, TypeError):
         raise HttpError(400, "Geometry is not valid GeoJSON")
 
     if expect == "point":
