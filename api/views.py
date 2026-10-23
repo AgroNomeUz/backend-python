@@ -27,6 +27,8 @@ from core.models import ActivityLog
 from core.views import activity_router
 from deals.views import deal_creation_router, deals_router
 from equipment.views import assets_router, catalog_router
+from farms.farm_api import clusters_router, farms_router, seasons_router
+from farms.field_api import crop_zones_router, fields_router
 from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
@@ -92,6 +94,11 @@ api.add_router("/inquiries", inquiries_router)
 api.add_router("/inquiries", deal_creation_router)
 api.add_router("/deals", deals_router)
 api.add_router("/favorites", favorites_router)
+api.add_router("/farm-clusters", clusters_router)
+api.add_router("/farms", farms_router)
+api.add_router("/seasons", seasons_router)
+api.add_router("/fields", fields_router)
+api.add_router("/crop-zones", crop_zones_router)
 api.add_router("/organizations", organizations_router)
 api.add_router("/regions", regions_router)
 api.add_router("/stats", stats_router)
