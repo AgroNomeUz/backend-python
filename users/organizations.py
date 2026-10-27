@@ -14,25 +14,25 @@ other org-scoped lookup in this API, extended here to "an org with nothing
 public to show".
 
 All four endpoints are unauthenticated except `/contacts` (and `/deals`, which
-takes optional auth only to fill in `role`), which requires a
-token but no permission code and no organization-membership check — the
-same "read is free" posture `/inquiries/{id}/messages` already uses: no
-`auth=` override on that one operation, so it inherits the API's default
-`JWTBearer()` and nothing below it checks who the caller is. Kept as its own
+takes optional auth only to fill in `role`). `/contacts` requires a token and a
+relationship: the caller's organization must be the org itself or have an
+inquiry or deal with it, else 403. Kept as its own
 endpoint, separate from the profile, so the profile itself stays
 cacheable/ISR-friendly and contacts never end up in crawlable HTML.
 """
 
 from uuid import UUID
 
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Q
 from django.http import Http404
 from django.shortcuts import aget_object_or_404
 from ninja import Router
+from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
 
 from api.auth import OptionalJWTBearer
 from deals.models import Deal, Review
+from inquiries.models import Inquiry
 from listings.models import active_listings
 
 from .models import Organization
@@ -136,13 +136,39 @@ async def get_organization_profile(request, org_id: UUID):
     }
 
 
+async def has_relationship(caller_org_id: int | None, org: Organization) -> bool:
+    """
+    Whether the caller's organization is the org itself or has an inquiry or
+    deal with it, in either direction. Declined deals count: the two did
+    transact on the platform, and the inquiry behind one exists anyway.
+    """
+    if not caller_org_id:
+        return False
+    if caller_org_id == org.pk:
+        return True
+    between = Q(provider_organization=org, customer_organization_id=caller_org_id) | Q(
+        customer_organization=org, provider_organization_id=caller_org_id
+    )
+    return await Inquiry.objects.filter(between).aexists() or await Deal.objects.filter(
+        between
+    ).aexists()
+
+
 @organizations_router.get("/{org_id}/contacts", response=OrganizationContactsOut)
 async def get_organization_contacts(request, org_id: UUID):
     """
-    Contact details. No `auth=` override (see module docstring) and no
-    permission check — any authenticated user, regardless of organization.
+    Contact details, for the organization itself and for organizations that
+    have an inquiry or a deal with it. Anyone else signed in gets a 403 —
+    the profile is public, so there is no existence to hide; the point is
+    that phone and email are not scrapable by every account.
     """
     org = await public_organization_or_404(org_id)
+    if not await has_relationship(request.auth.organization_id, org):
+        raise HttpError(
+            403,
+            "Contact details are shared with organizations that have an "
+            "inquiry or deal with this one.",
+        )
     return {
         "phone": org.phone or None,
         "email": org.email or None,
