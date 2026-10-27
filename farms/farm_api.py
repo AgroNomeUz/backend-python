@@ -24,8 +24,8 @@ from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
-from users.models import Organization, Region
-from users.permissions import caller_organization
+from users.models import OrgPermission, Organization, Region
+from users.permissions import readable_organization
 
 from .common import geometry_from_geojson, writable_organization
 from .external_refs import add_reference_routes, attach_references, references_of
@@ -72,7 +72,7 @@ def org_clusters(organization: Organization):
 @paginate(LimitOffsetPagination)
 async def list_clusters(request, search: str | None = None):
     """Farm clusters of the caller's organization. `search` matches on name."""
-    qs = org_clusters(caller_organization(request))
+    qs = org_clusters(readable_organization(request, OrgPermission.VIEW_FARMS))
     if search:
         qs = qs.filter(name__icontains=search)
     return qs
@@ -108,7 +108,7 @@ async def create_cluster(request, data: ClusterIn):
 @clusters_router.get("/{cluster_id}", response=ClusterOut)
 async def get_cluster(request, cluster_id: UUID):
     return await aget_object_or_404(
-        org_clusters(caller_organization(request)), public_id=cluster_id
+        org_clusters(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=cluster_id
     )
 
 
@@ -189,7 +189,7 @@ async def delete_cluster(request, cluster_id: UUID):
 @clusters_router.get("/{cluster_id}/activity", response=list[ActivityLogOut])
 @paginate(LimitOffsetPagination)
 async def cluster_activity(request, cluster_id: UUID):
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     cluster = await aget_object_or_404(
         org_clusters(organization), public_id=cluster_id
     )
@@ -248,7 +248,7 @@ async def list_farms(
     cluster_id: UUID | None = None,
 ):
     """Farms of the caller's organization. `search` matches name and address."""
-    qs = org_farms(caller_organization(request))
+    qs = org_farms(readable_organization(request, OrgPermission.VIEW_FARMS))
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(address__icontains=search))
     if region_id:
@@ -323,7 +323,7 @@ async def create_farm(request, data: FarmIn):
 @farms_router.get("/{farm_id}", response=FarmOut)
 async def get_farm(request, farm_id: UUID):
     farm = await aget_object_or_404(
-        org_farms(caller_organization(request)), public_id=farm_id
+        org_farms(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=farm_id
     )
     await attach_references([farm])
     return farm
@@ -409,7 +409,7 @@ async def delete_farm(request, farm_id: UUID):
 @farms_router.get("/{farm_id}/activity", response=list[ActivityLogOut])
 @paginate(LimitOffsetPagination)
 async def farm_activity(request, farm_id: UUID):
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     farm = await aget_object_or_404(org_farms(organization), public_id=farm_id)
     return org_activity(organization).filter(
         content_type__model="farm", object_id=farm.pk
@@ -434,7 +434,7 @@ def org_seasons(organization: Organization):
 @paginate(LimitOffsetPagination)
 async def list_seasons(request, search: str | None = None):
     """Seasons of the caller's organization, newest first."""
-    qs = org_seasons(caller_organization(request))
+    qs = org_seasons(readable_organization(request, OrgPermission.VIEW_FARMS))
     if search:
         qs = qs.filter(name__icontains=search)
     return qs
@@ -477,7 +477,7 @@ async def create_season(request, data: SeasonIn):
 @seasons_router.get("/{season_id}", response=SeasonOut)
 async def get_season(request, season_id: UUID):
     return await aget_object_or_404(
-        org_seasons(caller_organization(request)), public_id=season_id
+        org_seasons(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=season_id
     )
 
 

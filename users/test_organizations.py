@@ -190,27 +190,72 @@ class ContactsTests(OrganizationProfileTestCase):
         )
         self.assertEqual(resp.status_code, 401)
 
-    async def test_any_authenticated_user_may_read_contacts_regardless_of_org(self):
-        """Not gated on membership — a stranger's account is enough."""
+    def _setup_public_provider(self):
+        self.provider_org.phone = "+998901234567"
+        self.provider_org.email = "info@provider.uz"
+        self.provider_org.save(update_fields=["phone", "email"])
+        self.make_listing()
+
+    async def _contacts(self, user):
+        return await self.client.get(
+            f"/organizations/{self.provider_org.public_id}/contacts",
+            headers=auth_headers(user),
+        )
+
+    async def test_an_unrelated_account_is_refused(self):
         from asgiref.sync import sync_to_async
 
+        await sync_to_async(self._setup_public_provider)()
+        for user in (self.stranger_owner, self.customer_owner):
+            resp = await self._contacts(user)
+            self.assertEqual(resp.status_code, 403)
+            self.assertNotIn("phone", resp.json())
+
+    async def test_the_org_itself_may_read_its_contacts(self):
+        from asgiref.sync import sync_to_async
+
+        await sync_to_async(self._setup_public_provider)()
+        resp = await self._contacts(self.provider_owner)
+        self.assertEqual(resp.status_code, 200)
+
+    async def test_an_inquirer_may_read_contacts(self):
+        from asgiref.sync import sync_to_async
+        from inquiries.models import Inquiry
+
         def _setup():
-            self.provider_org.phone = "+998901234567"
-            self.provider_org.email = "info@provider.uz"
-            self.provider_org.save(update_fields=["phone", "email"])
-            self.make_listing()
+            self._setup_public_provider()
+            Inquiry.objects.create(
+                listing=self.make_listing(
+                    asset=Asset.objects.create(
+                        organization=self.provider_org,
+                        equipment_model=self.asset.equipment_model,
+                    ),
+                    status=Listing.Status.PAUSED,
+                ),
+                provider_organization=self.provider_org,
+                customer_organization=self.customer_org,
+                created_by=self.customer_owner,
+                message="Is it available?",
+            )
 
         await sync_to_async(_setup)()
-
-        resp = await self.client.get(
-            f"/organizations/{self.provider_org.public_id}/contacts",
-            headers=auth_headers(self.stranger_owner),
-        )
+        resp = await self._contacts(self.customer_owner)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["phone"], "+998901234567")
         self.assertEqual(data["email"], "info@provider.uz")
         self.assertIsNone(data["address"])
+
+    async def test_a_deal_counterparty_may_read_contacts(self):
+        from asgiref.sync import sync_to_async
+
+        def _setup():
+            self._setup_public_provider()
+            self.make_deal()
+
+        await sync_to_async(_setup)()
+        resp = await self._contacts(self.customer_owner)
+        self.assertEqual(resp.status_code, 200)
 
     async def test_contacts_404_for_an_org_with_nothing_public(self):
         resp = await self.client.get(
@@ -250,6 +295,23 @@ class DealsAndReviewsListTests(OrganizationProfileTestCase):
         # `Organization.name`, which is a person's full name here.
         self.assertEqual(row["counterparty"]["display_name"], "Alisher K.")
         self.assertEqual(row["review"]["rating"], 4)
+
+    async def test_role_is_the_callers_side_of_the_deal(self):
+        from asgiref.sync import sync_to_async
+
+        await sync_to_async(self.make_deal)()
+        url = f"/organizations/{self.provider_org.public_id}/deals"
+
+        async def role(user=None):
+            headers = auth_headers(user) if user else {}
+            resp = await self.client.get(url, headers=headers)
+            self.assertEqual(resp.status_code, 200)
+            return resp.json()["items"][0]["role"]
+
+        self.assertEqual(await role(self.customer_owner), "customer")
+        self.assertEqual(await role(self.provider_owner), "provider")
+        self.assertIsNone(await role(self.stranger_owner))
+        self.assertIsNone(await role())  # anonymous: still public, no role
 
     async def test_a_deal_with_no_review_yet_carries_a_null_review(self):
         from asgiref.sync import sync_to_async

@@ -54,12 +54,13 @@ class InquiryTestCase(TestCase):
         )
         cls.seller_owner.organization = cls.seller_org
         cls.seller_owner.save(update_fields=["organization"])
-        # No permission codes: reads everything in the org, writes nothing.
+        # View codes only: reads everything in the org, writes nothing.
         cls.seller_member = User.objects.create_user(
             username="seller-member",
             password="x",
             organization=cls.seller_org,
             full_name="Seller Member",
+            permissions=[OrgPermission.VIEW_INQUIRIES],
         )
 
         cls.buyer_owner = User.objects.create_user(
@@ -78,6 +79,7 @@ class InquiryTestCase(TestCase):
             password="x",
             organization=cls.buyer_org,
             full_name="Buyer Member",
+            permissions=[OrgPermission.VIEW_INQUIRIES],
         )
 
         manufacturer = Manufacturer.objects.create(name="MTZ")
@@ -525,6 +527,52 @@ class InquiryDetailTests(InquiryTestCase):
         sender_view = self.get_inquiry(self.buyer_owner).json()
         self.assertIn("handled_by", sender_view)
         self.assertIsNone(sender_view["handled_by"])
+
+
+class InquiryDealFieldTests(InquiryTestCase):
+    """The deal id a customer needs to confirm, on every inquiry response."""
+
+    def setUp(self):
+        self.inquiry = self.make_inquiry()
+
+    def test_null_until_the_provider_proposes_a_deal(self):
+        for user, path in (
+            (self.seller_owner, f"{self.inquiry.public_id}"),
+            (self.buyer_owner, f"{self.inquiry.public_id}"),
+            (self.seller_owner, "received"),
+            (self.buyer_owner, "sent"),
+        ):
+            response = self.client.get(f"/api/v1/inquiries/{path}", **auth(user))
+            body = response.json()
+            row = body["items"][0] if "items" in body else body
+            self.assertIn("deal", row)
+            self.assertIsNone(row["deal"], path)
+
+    def test_both_parties_see_the_deal_once_it_exists(self):
+        from deals.models import Deal
+
+        deal = Deal.objects.create(
+            listing=self.inquiry.listing,
+            inquiry=self.inquiry,
+            provider_organization=self.inquiry.provider_organization,
+            customer_organization=self.inquiry.customer_organization,
+            deal_type=Deal.DealType.RENT,
+        )
+        expected = {
+            "id": str(deal.public_id),
+            "status": "pending_confirmation",
+            "deal_type": "rent",
+        }
+        for user, path in (
+            (self.seller_owner, f"{self.inquiry.public_id}"),
+            (self.buyer_owner, f"{self.inquiry.public_id}"),
+            (self.seller_owner, "received"),
+            (self.buyer_owner, "sent"),
+        ):
+            response = self.client.get(f"/api/v1/inquiries/{path}", **auth(user))
+            body = response.json()
+            row = body["items"][0] if "items" in body else body
+            self.assertEqual(row["deal"], expected, path)
 
 
 class ThreadReadTests(InquiryTestCase):

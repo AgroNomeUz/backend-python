@@ -26,6 +26,7 @@ together.
 """
 
 import logging
+import os
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -45,8 +46,8 @@ from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
 from equipment.models import Asset
 from equipment.views import _category_q, _size_class_filter, writable_organization
-from users.models import Organization, Region
-from users.permissions import caller_organization
+from users.models import OrgPermission, Organization, Region
+from users.permissions import readable_organization
 
 from .models import IMAGE_EXTENSIONS, Listing, ListingImage, ListingView, active_listings
 from .schemas import (
@@ -265,7 +266,7 @@ async def list_my_listings(
     appear here twice (offered for rent *and* for sale) or not at all.
     `created_by` answers "what has this member published?" (§0.3).
     """
-    qs = org_listings(caller_organization(request))
+    qs = org_listings(readable_organization(request, OrgPermission.VIEW_EQUIPMENT))
     if status:
         qs = qs.filter(status=status)
     if listing_type:
@@ -460,7 +461,7 @@ async def get_listing(request, listing_id: UUID):
 
     Optional auth, not public: a stranger sees it only while it is active and
     the machine is available, but the organization that owns it sees its own
-    drafts and paused offers here too — otherwise the edit screen would have
+    drafts and paused offers here too (given `equipment.view`) — otherwise the edit screen would have
     to read from a different endpoint than the public page it previews.
 
     This is also where the views counter §7 needs is written, because it is
@@ -472,7 +473,12 @@ async def get_listing(request, listing_id: UUID):
         status=Listing.Status.ACTIVE,
         asset__operational_status=Asset.OperationalStatus.AVAILABLE,
     )
-    if user is not None and user.organization_id:
+    if (
+        user is not None
+        and user.organization_id
+        and user.has_org_perm(OrgPermission.VIEW_EQUIPMENT)
+    ):
+        # Without `equipment.view` a member sees only what a stranger would.
         visible |= Q(organization_id=user.organization_id)
 
     listing = await aget_object_or_404(
@@ -729,7 +735,7 @@ def _apply_delete_image(request, organization, listing: Listing, image: ListingI
             organization,
             ActivityLog.Action.UPDATED,
             listing,
-            changes={"images": {"from": "removed", "to": str(image.public_id)}},
+            changes={"images": {"from": os.path.basename(image.file.name), "to": "removed"}},
         )
 
 

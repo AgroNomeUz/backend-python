@@ -40,7 +40,7 @@ from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, require_perm
+from users.permissions import caller_organization, readable_organization, require_perm
 
 from .models import (
     Asset,
@@ -239,8 +239,13 @@ def _category_q(category: str, prefix: str = "") -> Q:
 
 @catalog_router.get("/equipment-models/{model_id}", response=EquipmentModelOut)
 async def get_equipment_model(request, model_id: UUID):
+    # `category__parent` is joined for `CategoryOut`, which reads `obj.parent`
+    # — a lazy load that an async view turns into SynchronousOnlyOperation
+    # for every model whose category has a parent (the list joins it too).
     return await aget_object_or_404(
-        EquipmentModel.objects.select_related("manufacturer", "category"),
+        EquipmentModel.objects.select_related(
+            "manufacturer", "category", "category__parent"
+        ),
         public_id=model_id,
     )
 
@@ -267,7 +272,7 @@ async def list_assets(
     bookable: bool | None = None,
 ):
     """Machines registered to the caller's organization."""
-    qs = org_assets(caller_organization(request))
+    qs = org_assets(readable_organization(request, OrgPermission.VIEW_EQUIPMENT))
 
     if search:
         qs = qs.filter(
@@ -332,7 +337,7 @@ async def create_asset(request, data: AssetIn):
 @assets_router.get("/{asset_id}", response=AssetOut)
 async def get_asset(request, asset_id: UUID):
     return await aget_object_or_404(
-        org_assets(caller_organization(request)), public_id=asset_id
+        org_assets(readable_organization(request, OrgPermission.VIEW_EQUIPMENT)), public_id=asset_id
     )
 
 
@@ -383,6 +388,17 @@ async def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
     )
 
 
+def _referrers(exc: ProtectedError) -> str:
+    """
+    Name what actually blocked a delete: "listings", "bookings and work
+    sessions" — whatever kinds of row `ProtectedError` found, not a fixed guess.
+    """
+    names = sorted({str(obj._meta.verbose_name_plural).lower() for obj in exc.protected_objects})
+    if not names:
+        return "other records"
+    return ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+
+
 def _apply_delete_asset(request, organization, asset: Asset) -> None:
     """Sync transactional core of `delete_asset`."""
     try:
@@ -397,10 +413,10 @@ def _apply_delete_asset(request, organization, asset: Asset) -> None:
                 changes=diff(asset_snapshot(asset), {}),
             )
             asset.delete()
-    except ProtectedError:
+    except ProtectedError as exc:
         raise HttpError(
             409,
-            "This asset is referenced by bookings or work sessions. "
+            f"This asset is referenced by {_referrers(exc)}. "
             "Set its operational_status to 'retired' instead of deleting it.",
         )
 
@@ -408,8 +424,9 @@ def _apply_delete_asset(request, organization, asset: Asset) -> None:
 @assets_router.delete("/{asset_id}", response={204: None})
 async def delete_asset(request, asset_id: UUID):
     """
-    Remove an asset. Machines referenced by bookings or work sessions are
-    protected at the DB level — retire those instead of deleting them.
+    Remove an asset. Machines still referenced by anything protected — a
+    listing, a booking, a work session — are refused at the DB level; the 409
+    names what is in the way. Retire those instead of deleting them.
     """
     organization = writable_organization(request)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
@@ -440,7 +457,7 @@ async def asset_activity(request, asset_id: UUID):
     are correct; this one is the better one when the client already knows it
     is looking at one of its own machines.
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_EQUIPMENT)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
     return org_activity(organization).filter(
         content_type__model="asset", object_id=asset.pk

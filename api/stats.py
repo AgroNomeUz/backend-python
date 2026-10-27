@@ -43,7 +43,7 @@ from core.models import ActivityLog
 from equipment.models import Asset, Booking, BookingStatusHistory, EquipmentCategory
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingView, active_listing_q, active_listings
-from users.models import Organization, Region, User
+from users.models import OrgPermission, Organization, Region, User
 from users.permissions import caller_organization
 
 from .stats_schemas import LandingStatsOut, OwnerStatsOut
@@ -206,47 +206,62 @@ async def owner_stats(request):
     an organization gets the 403 `caller_organization` raises.
     """
     organization = caller_organization(request)
-    return await sync_to_async(_compute_owner_stats)(organization)
+    user = request.auth
+    can = {
+        "equipment": user.has_org_perm(OrgPermission.VIEW_EQUIPMENT),
+        "inquiries": user.has_org_perm(OrgPermission.VIEW_INQUIRIES),
+        "users": user.has_org_perm(OrgPermission.VIEW_USERS),
+    }
+    return await sync_to_async(_compute_owner_stats)(organization, can)
 
 
-def _compute_owner_stats(organization: Organization) -> dict:
+def _compute_owner_stats(organization: Organization, can: dict[str, bool]) -> dict:
+    """`can` says which blocks the caller may see; the rest stay null."""
     today = timezone.localdate()
+    stats: dict = {}
 
-    counts_by_status = dict(
-        Listing.objects.filter(organization=organization)
-        .values_list("status")
-        .annotate(total=Count("pk"))
-    )
-    listings_by_status = {
-        status: counts_by_status.get(status, 0) for status in Listing.Status.values
-    }
+    if can["equipment"]:
+        counts_by_status = dict(
+            Listing.objects.filter(organization=organization)
+            .values_list("status")
+            .annotate(total=Count("pk"))
+        )
+        listings_by_status = {
+            status: counts_by_status.get(status, 0) for status in Listing.Status.values
+        }
+        views = ListingView.objects.filter(organization=organization)
+        stats.update(
+            active_listings=listings_by_status[Listing.Status.ACTIVE],
+            listings_on_market=active_listings()
+            .filter(organization=organization)
+            .count(),
+            listings_by_status=listings_by_status,
+            views={
+                "total": views.count(),
+                "last_7_days": views.filter(
+                    viewed_on__gte=today - timedelta(days=WEEK)
+                ).count(),
+                "last_30_days": views.filter(
+                    viewed_on__gte=today - timedelta(days=MONTH)
+                ).count(),
+            },
+        )
 
-    received = Inquiry.objects.filter(provider_organization=organization)
-    views = ListingView.objects.filter(organization=organization)
-
-    return {
-        "active_listings": listings_by_status[Listing.Status.ACTIVE],
-        "listings_on_market": active_listings()
-        .filter(organization=organization)
-        .count(),
-        "listings_by_status": listings_by_status,
-        # The partial `inquiry_unread_idx` exists for exactly this count.
-        "unread_inquiries": received.filter(read_at__isnull=True).count(),
-        "inquiries_received": received.count(),
-        "inquiries_sent": Inquiry.objects.filter(
-            customer_organization=organization
-        ).count(),
-        "views": {
-            "total": views.count(),
-            "last_7_days": views.filter(
-                viewed_on__gte=today - timedelta(days=WEEK)
+    if can["inquiries"]:
+        received = Inquiry.objects.filter(provider_organization=organization)
+        stats.update(
+            # The partial `inquiry_unread_idx` exists for exactly this count.
+            unread_inquiries=received.filter(read_at__isnull=True).count(),
+            inquiries_received=received.count(),
+            inquiries_sent=Inquiry.objects.filter(
+                customer_organization=organization
             ).count(),
-            "last_30_days": views.filter(
-                viewed_on__gte=today - timedelta(days=MONTH)
-            ).count(),
-        },
-        "members": _member_activity(organization),
-    }
+        )
+
+    if can["users"]:
+        stats["members"] = _member_activity(organization)
+
+    return stats
 
 
 def _member_activity(organization: Organization) -> list[dict]:

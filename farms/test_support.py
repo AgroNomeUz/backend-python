@@ -2,8 +2,9 @@
 farms/test_support.py
 Shared fixtures for the farms tests.
 
-Two organizations, each with an owner, a member who holds no permissions
-(reads everything, writes nothing) and a member who holds `farms.manage`. Every
+Two organizations, each with an owner, a member who holds only `farms.view`
+(reads everything, writes nothing), a `blind` member with no permissions (sees
+nothing) and a member who holds `farms.manage`. Every
 farms test module builds on `FarmsTestCase`, so "the other org" is always there
 to check the negative case against.
 """
@@ -55,6 +56,13 @@ def _make_org(slug: str, region: Region) -> dict:
         password="x",
         organization=org,
         full_name=f"{slug} member",
+        permissions=[OrgPermission.VIEW_FARMS.value],
+    )
+    blind = User.objects.create_user(
+        username=f"{slug}-blind",
+        password="x",
+        organization=org,
+        full_name=f"{slug} blind",
     )
     manager = User.objects.create_user(
         username=f"{slug}-manager",
@@ -63,7 +71,13 @@ def _make_org(slug: str, region: Region) -> dict:
         full_name=f"{slug} manager",
         permissions=[OrgPermission.MANAGE_FARMS.value],
     )
-    return {"org": org, "owner": owner, "member": member, "manager": manager}
+    return {
+        "org": org,
+        "owner": owner,
+        "member": member,
+        "blind": blind,
+        "manager": manager,
+    }
 
 
 class FarmsTestCase(TestCase):

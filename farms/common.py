@@ -147,3 +147,20 @@ def geojson_out(geometry) -> dict | None:
     if geometry is None:
         return None
     return json.loads(geometry.geojson)
+
+
+def describe_geometry(geometry) -> str | None:
+    """
+    A short human label for an activity-log diff: the kind, how many points
+    and where its centre is, e.g. "MultiPolygon, 5 points, centre 41.3111,
+    69.2797". Not the coordinates, which are unreadable in a history feed —
+    but the centre moves with any edit to the shape, so a changed outline
+    still shows up as a change.
+    """
+    if geometry is None:
+        return None
+    centre = geometry.centroid
+    return (
+        f"{geometry.geom_type}, {geometry.num_coords} points, "
+        f"centre {centre.y:.5f}, {centre.x:.5f}"
+    )

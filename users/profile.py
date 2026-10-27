@@ -134,7 +134,7 @@ async def user_payload(user: User) -> dict:
         "last_name": user.last_name,
         "is_owner": is_owner,
         "permissions": (
-            list(OrgPermission.values) if is_owner else sorted(user.permissions or [])
+            list(OrgPermission.values) if is_owner else user.granted_permissions
         ),
         "must_change_password": user.must_change_password,
         "organization": org,

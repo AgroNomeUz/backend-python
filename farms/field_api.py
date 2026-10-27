@@ -14,8 +14,8 @@ why). Boundaries are append-only over the API: a new one closes the open one
 and is audited as an `updated` on the field.
 """
 
-import hashlib
 from datetime import date, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -31,10 +31,10 @@ from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
-from users.models import Organization
-from users.permissions import caller_organization
+from users.models import OrgPermission, Organization
+from users.permissions import readable_organization
 
-from .common import geometry_from_geojson, writable_organization
+from .common import describe_geometry, geometry_from_geojson, writable_organization
 from .external_refs import add_reference_routes, attach_references, references_of
 from .field_schemas import (
     BoundaryIn,
@@ -46,7 +46,8 @@ from .field_schemas import (
     FieldOut,
     FieldUpdateIn,
 )
-from .models import CropZone, Farm, Field, FieldBoundary, Season
+from .models import CropZone, Farm, Field, FieldBoundary, Season, geometry_area_hectares
+from .units import HECTARE
 
 class ReferencePagination(LimitOffsetPagination):
     """Limit/offset, plus the external references of the page's objects."""
@@ -79,30 +80,24 @@ CROP_ZONE_AUDIT_FIELDS = [
 
 def field_snapshot(field: Field) -> dict:
     values = snapshot(field, FIELD_AUDIT_FIELDS)
-    values["farm"] = str(field.farm.public_id)
+    values["farm"] = field.farm.name
     return values
 
 
 def crop_zone_snapshot(zone: CropZone) -> dict:
     values = snapshot(zone, CROP_ZONE_AUDIT_FIELDS)
-    values["field"] = str(zone.field.public_id)
-    values["season"] = str(zone.season.public_id)
-    # A fingerprint, not the coordinates: enough to show that the shape changed.
-    geometry = zone.geometry
-    values["geometry"] = (
-        f"{geometry.geom_type}:{hashlib.sha1(geometry.wkb).hexdigest()[:12]}"
-        if geometry
-        else None
-    )
+    values["field"] = zone.field.name
+    values["season"] = zone.season.name
+    values["geometry"] = describe_geometry(zone.geometry)
     return values
 
 
 def boundary_ref(boundary: FieldBoundary | None) -> dict | None:
-    """Audit-friendly view of a boundary: its public id and area."""
+    """Audit-friendly view of a boundary: when it took effect, and its area."""
     if boundary is None:
         return None
     return {
-        "id": str(boundary.public_id),
+        "valid_from": boundary.valid_from.isoformat(),
         "area": float(boundary.area),
         "area_unit": boundary.area_unit,
     }
@@ -162,7 +157,7 @@ async def list_fields(
     cluster_id: UUID | None = None,
 ):
     """Fields of the caller's organization. `search` matches field or farm name."""
-    qs = org_fields(caller_organization(request))
+    qs = org_fields(readable_organization(request, OrgPermission.VIEW_FARMS))
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(farm__name__icontains=search))
     if farm_id:
@@ -235,7 +230,7 @@ async def create_field(request, data: FieldIn):
 @fields_router.get("/{field_id}", response=FieldOut)
 async def get_field(request, field_id: UUID):
     field = await aget_object_or_404(
-        org_fields(caller_organization(request)), public_id=field_id
+        org_fields(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=field_id
     )
     await attach_references([field])
     return field
@@ -322,7 +317,7 @@ async def delete_field(request, field_id: UUID):
 async def list_boundaries(request, field_id: UUID):
     """The field's boundary history, newest first."""
     field = await aget_object_or_404(
-        org_fields(caller_organization(request)), public_id=field_id
+        org_fields(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=field_id
     )
     return FieldBoundary.objects.filter(field=field).select_related("created_by")
 
@@ -403,7 +398,7 @@ async def add_boundary(request, field_id: UUID, data: BoundaryIn):
 @paginate(LimitOffsetPagination)
 async def field_activity(request, field_id: UUID):
     """Everything that ever happened to one field, newest first."""
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     field = await aget_object_or_404(org_fields(organization), public_id=field_id)
     return org_activity(organization).filter(
         content_type__model="field", object_id=field.pk
@@ -425,6 +420,37 @@ def _crop_code(value: str) -> str:
     return code
 
 
+# About a metre: a zone drawn up to the field's edge should not be refused for
+# the last digit of a coordinate. Degrees, because the geometry is EPSG:4326.
+FIELD_EDGE_TOLERANCE = 0.00001
+
+
+def _check_inside_field(field: Field, geometry) -> None:
+    """
+    A zone's shape must lie within its field's current outline.
+
+    A field with no boundary yet has nothing to measure against, so it passes —
+    refusing would make drawing zones depend on drawing the field first.
+    """
+    if geometry is None:
+        return
+    outline = (
+        FieldBoundary.objects.filter(field=field, valid_to__isnull=True)
+        .values_list("geometry", flat=True)
+        .first()
+    )
+    if outline is not None and not outline.buffer(FIELD_EDGE_TOLERANCE).covers(geometry):
+        raise HttpError(400, "The crop zone's geometry must lie within its field's boundary.")
+
+
+def _computed_area(geometry) -> Decimal:
+    """Hectares of a zone's geometry, a 400 if it cannot be measured."""
+    try:
+        return geometry_area_hectares(geometry)
+    except ValidationError as exc:
+        raise HttpError(400, "; ".join(exc.messages))
+
+
 def _check_harvest_dates(planting_date, expected_harvest_date) -> None:
     if planting_date and expected_harvest_date and expected_harvest_date < planting_date:
         raise HttpError(400, "expected_harvest_date cannot be before planting_date")
@@ -440,7 +466,7 @@ async def list_crop_zones(
     crop_code: str | None = None,
 ):
     """Crop zones of the caller's organization."""
-    qs = org_crop_zones(caller_organization(request))
+    qs = org_crop_zones(readable_organization(request, OrgPermission.VIEW_FARMS))
     if field_id:
         qs = qs.filter(field__public_id=field_id)
     if farm_id:
@@ -472,6 +498,11 @@ def _apply_create_crop_zone(request, organization, data: CropZoneIn) -> CropZone
     season = _own_season(organization, data.season_id)
     _check_harvest_dates(data.planting_date, data.expected_harvest_date)
     geometry = geometry_from_geojson(data.geometry)
+    _check_inside_field(field, geometry)
+    if geometry is not None and data.area is not None:
+        raise HttpError(
+            400, "area is computed from the geometry; send one or the other."
+        )
 
     try:
         with transaction.atomic():
@@ -482,8 +513,14 @@ def _apply_create_crop_zone(request, organization, data: CropZoneIn) -> CropZone
                 crop_code=_crop_code(data.crop_code),
                 crop_name=data.crop_name,
                 geometry=geometry,
-                area=data.area.value if data.area else None,
-                **({"area_unit": data.area.unit} if data.area else {}),
+                **(
+                    {"area": _computed_area(geometry), "area_unit": HECTARE}
+                    if geometry is not None
+                    else {
+                        "area": data.area.value if data.area else None,
+                        **({"area_unit": data.area.unit} if data.area else {}),
+                    }
+                ),
                 planting_date=data.planting_date,
                 expected_harvest_date=data.expected_harvest_date,
                 harvest_date=data.harvest_date,
@@ -514,7 +551,7 @@ async def create_crop_zone(request, data: CropZoneIn):
 @crop_zones_router.get("/{zone_id}", response=CropZoneOut)
 async def get_crop_zone(request, zone_id: UUID):
     zone = await aget_object_or_404(
-        org_crop_zones(caller_organization(request)), public_id=zone_id
+        org_crop_zones(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=zone_id
     )
     await attach_references([zone])
     return zone
@@ -532,18 +569,32 @@ def _apply_update_crop_zone(
 
     before = crop_zone_snapshot(zone)
 
-    if "field_id" in fields:
+    field_changed = "field_id" in fields
+    if field_changed:
         zone.field = _own_field(organization, fields.pop("field_id"))
     if "season_id" in fields:
         zone.season = _own_season(organization, fields.pop("season_id"))
-    if "geometry" in fields:
+    geometry_changed = "geometry" in fields
+    if geometry_changed:
         fields.pop("geometry")
         zone.geometry = geometry_from_geojson(data.geometry)
     if "area" in fields:
         fields.pop("area")
+        if zone.geometry is not None:
+            raise HttpError(
+                400,
+                "area is computed from the geometry; clear the geometry to set it by hand.",
+            )
         zone.area = data.area.value if data.area else None
         if data.area:
             zone.area_unit = data.area.unit
+    if zone.geometry is not None and (geometry_changed or field_changed):
+        # Re-checked when the field moves too: the old shape has to fit the
+        # new field.
+        _check_inside_field(zone.field, zone.geometry)
+    if zone.geometry is not None and geometry_changed:
+        zone.area = _computed_area(zone.geometry)
+        zone.area_unit = HECTARE
     if "crop_code" in fields:
         fields["crop_code"] = _crop_code(fields["crop_code"])
     for name, value in fields.items():
@@ -607,7 +658,7 @@ async def delete_crop_zone(request, zone_id: UUID):
 @paginate(LimitOffsetPagination)
 async def crop_zone_activity(request, zone_id: UUID):
     """Everything that ever happened to one crop zone, newest first."""
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     zone = await aget_object_or_404(org_crop_zones(organization), public_id=zone_id)
     return org_activity(organization).filter(
         content_type__model="cropzone", object_id=zone.pk

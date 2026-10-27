@@ -26,7 +26,7 @@ from api.auth import create_access_token
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from listings.models import Listing
-from users.models import OrgPermission, Organization, Region, User
+from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, Region, User
 
 ACTIVITY = "/api/v1/activity"
 
@@ -67,10 +67,17 @@ class ActivityTestCase(TestCase):
             full_name="Dilnoza Rahimova",
             permissions=[OrgPermission.MANAGE_EQUIPMENT, OrgPermission.MANAGE_USERS],
         )
-        # No codes, and no `full_name` either — one account proving both that
-        # reads are ungated (§0.2) and that `actor_name` falls back.
+        # View codes only, and no `full_name` either — one account proving both
+        # that `activity.view` is enough to read and that `actor_name` falls back.
         cls.plain = User.objects.create_user(
-            username="activity-plain", password="x", organization=cls.org
+            username="activity-plain",
+            password="x",
+            organization=cls.org,
+            permissions=list(VIEW_PERMISSIONS),
+        )
+        # No codes at all: may see nothing private.
+        cls.blind = User.objects.create_user(
+            username="activity-blind", password="x", organization=cls.org
         )
 
         cls.rival_owner = User.objects.create_user(
@@ -130,11 +137,18 @@ class ActivityAccessTests(ActivityTestCase):
         stray = User.objects.create_user(username="activity-stray", password="x")
         self.assertEqual(self.client.get(ACTIVITY, **auth(stray)).status_code, 403)
 
-    def test_a_member_with_no_codes_reads_the_whole_org_history(self):
+    def test_a_member_without_activity_view_is_403(self):
+        self.make_listing(user=self.owner)
+        self.assertEqual(self.client.get(ACTIVITY, **auth(self.blind)).status_code, 403)
+        # Manage codes don't imply it: the feed names objects from every area.
+        self.assertEqual(self.client.get(ACTIVITY, **auth(self.manager)).status_code, 403)
+
+    def test_a_member_with_activity_view_reads_the_whole_org_history(self):
         """
         The decision §8 asked for: the whole organization, not just your own
-        rows. Reads are ungated (§0.2), and a member seeing that a colleague
-        archived the listing they published is the feature, not a leak.
+        rows. `activity.view` is the one gate, and a member seeing that a
+        colleague archived the listing they published is the feature, not a
+        leak.
         """
         self.make_listing(user=self.owner)
         actors = {row["actor_username"] for row in self.rows(self.plain)}

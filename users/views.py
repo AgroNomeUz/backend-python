@@ -44,7 +44,12 @@ from core.schemas import ActivityLogOut
 from core.views import org_activity
 
 from .models import OrgPermission, Organization, User
-from .permissions import caller_organization, normalize_permissions, require_perm
+from .permissions import (
+    caller_organization,
+    normalize_permissions,
+    readable_organization,
+    require_perm,
+)
 from .presets import OWNER_PRESET_ID, PRESETS
 from .schemas import (
     MemberCreateIn,
@@ -204,7 +209,7 @@ async def list_members(
     `preset` filters by the matched role preset (users/presets.py): a preset
     id, `owner`, or `custom` for hand-tuned sets.
     """
-    qs = org_members(caller_organization(request))
+    qs = org_members(readable_organization(request, OrgPermission.VIEW_USERS))
 
     if search:
         qs = qs.filter(
@@ -304,7 +309,7 @@ async def create_member(request, data: MemberCreateIn):
 
 @members_router.get("/{member_id}", response=MemberOut)
 async def get_member(request, member_id: UUID):
-    return await member_or_404(caller_organization(request), member_id)
+    return await member_or_404(readable_organization(request, OrgPermission.VIEW_USERS), member_id)
 
 
 @members_router.get("/{member_id}/activity", response=list[ActivityLogOut])
@@ -328,7 +333,7 @@ async def member_activity(request, member_id: UUID):
     caller's own roster, so a member id from elsewhere is a 404 rather than
     an empty page.
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_USERS)
     member = await member_or_404(organization, member_id)
     return org_activity(organization).filter(actor=member)
 

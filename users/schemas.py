@@ -7,6 +7,7 @@ All `id` fields carry `public_id` (UUID). Integer PKs never leave the backend.
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from django.core.exceptions import ObjectDoesNotExist
@@ -305,6 +306,26 @@ class OrganizationDealOut(Schema):
     listing: DealListingBriefOut | None = None
     counterparty: DealCounterpartyOut
     review: DealReviewBriefOut | None = None
+    # The *caller's* side of the deal: "customer" is the one who may leave a
+    # review (once, on a completed deal, while `review` is still null),
+    # "provider" is the profile's own organization, and null is everyone else
+    # — an anonymous visitor or a member of an uninvolved organization.
+    role: Literal["provider", "customer"] | None = None
+
+    @staticmethod
+    def resolve_role(obj, context):
+        # Imported here: api.auth pulls in users.models, which this module's
+        # importers load first.
+        from api.auth import authenticated_user
+
+        user = authenticated_user((context or {}).get("request"))
+        if user is None or not user.organization_id:
+            return None
+        if user.organization_id == obj.customer_organization_id:
+            return "customer"
+        if user.organization_id == obj.provider_organization_id:
+            return "provider"
+        return None
 
     @staticmethod
     def resolve_listing(obj, context):

@@ -3,7 +3,7 @@ users/iam.py
 `/iam` — the read side of the console's IAM service: which permissions exist
 and which role presets bundle them.
 
-Both are readable by any member (§0.2: reads are open). Nothing here writes;
+Both need `users.view`. Nothing here writes;
 applying a preset is `PATCH /members/{id}` with the preset's codes.
 
 The permission catalogue carries a `service` so the console can group codes
@@ -16,7 +16,7 @@ from django.db.models import Count, Q
 from ninja import Field, Router, Schema
 
 from .models import OrgPermission, User
-from .permissions import caller_organization
+from .permissions import readable_organization
 from .presets import PRESETS
 
 iam_router = Router(tags=["IAM"])
@@ -38,6 +38,26 @@ _PERMISSION_INFO = {
     OrgPermission.MANAGE_FARMS: (
         "farms", "Farms",
         "Create and edit farms, fields, boundaries, seasons and crop zones.",
+    ),
+    OrgPermission.VIEW_EQUIPMENT: (
+        "equipment", "Equipment",
+        "See the organization's machines and its own listings, including drafts.",
+    ),
+    OrgPermission.VIEW_USERS: (
+        "iam", "IAM",
+        "See the member roster, permissions and role presets.",
+    ),
+    OrgPermission.VIEW_INQUIRIES: (
+        "inquiries", "Inquiries",
+        "Read sent and received inquiries and their threads.",
+    ),
+    OrgPermission.VIEW_FARMS: (
+        "farms", "Farms",
+        "See farms, fields, boundaries, seasons and crop zones.",
+    ),
+    OrgPermission.VIEW_ACTIVITY: (
+        "activity", "Activity",
+        "Read the organization-wide change history.",
     ),
 }
 
@@ -64,7 +84,7 @@ class PresetOut(Schema):
 @iam_router.get("/permissions", response=list[PermissionOut])
 async def list_permissions(request):
     """Every permission code a member can be granted, grouped by service."""
-    caller_organization(request)
+    readable_organization(request, OrgPermission.VIEW_USERS)
     rows = []
     for code in OrgPermission:
         service, service_label, description = _PERMISSION_INFO.get(
@@ -88,7 +108,7 @@ async def list_presets(request):
     One query: the counts are conditional aggregates over the caller's active,
     non-owner staff, compared by exact (sorted) array equality.
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_USERS)
     staff = User.objects.filter(
         organization=organization,
         is_active=True,

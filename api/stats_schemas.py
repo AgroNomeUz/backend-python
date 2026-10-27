@@ -123,15 +123,19 @@ class OwnerStatsOut(Schema):
     support ticket instead.
     """
 
-    active_listings: int
-    listings_on_market: int
+    # Each block is null when the caller lacks the view permission behind it:
+    # listings and views need `equipment.view`, the inquiry counts need
+    # `inquiries.view`, the roster needs `users.view`. Null, not zero — zero
+    # would read as "nothing there".
+    active_listings: int | None = None
+    listings_on_market: int | None = None
     # Every status, including the ones that are zero, so the client can render
     # a fixed set of tiles without inventing the missing keys.
-    listings_by_status: dict[str, int]
+    listings_by_status: dict[str, int] | None = None
 
-    unread_inquiries: int
-    inquiries_received: int
-    inquiries_sent: int
+    unread_inquiries: int | None = None
+    inquiries_received: int | None = None
+    inquiries_sent: int | None = None
 
-    views: ListingViewsOut
-    members: list[MemberActivityOut]
+    views: ListingViewsOut | None = None
+    members: list[MemberActivityOut] | None = None

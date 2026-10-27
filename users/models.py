@@ -12,13 +12,19 @@ class OrgPermission(models.TextChoices):
     """
     What a member is allowed to do inside their own organization.
 
-    Deliberately coarse: one code per manageable area, not per endpoint.
-    Reads are open to every member of the org — a permission only ever gates
-    writes. The owner implicitly holds every code (see `User.has_org_perm`),
-    so an org always has at least one account that can grant permissions.
+    Deliberately coarse: one code per area, not per endpoint. `*.manage`
+    gates writes and `*.view` gates reading the organization's private data
+    in that area. Manage implies view (`VIEW_IMPLIED_BY`), so a member can
+    never be able to change something they cannot see. The owner implicitly
+    holds every code (see `User.has_org_perm`), so an org always has at least
+    one account that can grant permissions.
 
-    Add a code here when a new write-capable area ships; existing members
-    simply won't have it until someone grants it.
+    Not gated, because they are not the organization's private data: the
+    global catalogue, public listings and profiles, the caller's own
+    `/users/me` and favorites.
+
+    Add codes here when a new area ships; existing members simply won't have
+    them until someone grants them (or a data migration backfills them).
     """
 
     MANAGE_EQUIPMENT = "equipment.manage", "Manage equipment"
@@ -33,6 +39,29 @@ class OrgPermission(models.TextChoices):
     # Farms, fields, boundaries, seasons and crop zones: one code for the
     # whole farms domain.
     MANAGE_FARMS = "farms.manage", "Manage farms"
+
+    # Read access. Deals have no private read endpoint of their own (the
+    # public profile lists them; an inquiry embeds its deal), so there is no
+    # deals.view yet — add it with the first `GET /deals`.
+    VIEW_EQUIPMENT = "equipment.view", "View equipment"
+    VIEW_USERS = "users.view", "View users"
+    VIEW_INQUIRIES = "inquiries.view", "View inquiries"
+    VIEW_FARMS = "farms.view", "View farms"
+    # The organization-wide change history (`GET /activity`). Separate from
+    # the per-area codes because that feed names objects from every area.
+    VIEW_ACTIVITY = "activity.view", "View activity log"
+
+
+# Holding the manage code of an area grants its view code.
+VIEW_IMPLIED_BY = {
+    OrgPermission.VIEW_EQUIPMENT.value: OrgPermission.MANAGE_EQUIPMENT.value,
+    OrgPermission.VIEW_USERS.value: OrgPermission.MANAGE_USERS.value,
+    OrgPermission.VIEW_INQUIRIES.value: OrgPermission.MANAGE_INQUIRIES.value,
+    OrgPermission.VIEW_FARMS.value: OrgPermission.MANAGE_FARMS.value,
+}
+VIEW_PERMISSIONS = tuple(
+    code.value for code in OrgPermission if code.value.endswith(".view")
+)
 
 
 class User(PublicIdModel, AbstractUser):
@@ -140,13 +169,26 @@ class User(PublicIdModel, AbstractUser):
         """
         if self.is_organization_owner:
             return list(OrgPermission.values)
-        return sorted(self.permissions or [])
+        return self.granted_permissions
+
+    @property
+    def granted_permissions(self) -> list[str]:
+        """
+        The stored codes plus the view codes their manage codes imply — for a
+        non-owner. Doesn't look at ownership, so it is safe in async code that
+        has already decided that (see `users.profile.user_payload`).
+        """
+        return sorted(code for code in OrgPermission.values if self._holds(code))
+
+    def _holds(self, code: str) -> bool:
+        granted = self.permissions or []
+        return code in granted or VIEW_IMPLIED_BY.get(code) in granted
 
     def has_org_perm(self, code: str) -> bool:
         """True if this user may perform `code` inside their organization."""
         if self.is_organization_owner:
             return True
-        return code in (self.permissions or [])
+        return self._holds(code)
 
     class Meta(AbstractUser.Meta):
         swappable = "AUTH_USER_MODEL"

@@ -475,6 +475,47 @@ class AssetWriteTests(TestCase):
             ).exists()
         )
 
+    def test_delete_refusal_names_what_is_in_the_way(self):
+        """A listing is the blocker here, not a booking or work session."""
+        from listings.models import Listing
+
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        Listing.objects.create(
+            organization=self.org,
+            asset=asset,
+            created_by=self.owner,
+            listing_type=Listing.ListingType.RENT,
+            title="For rent",
+            price="100.00",
+        )
+
+        response = self.client.delete(f"/api/v1/assets/{asset.public_id}", **self.auth())
+
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertIn("listings", detail)
+        self.assertNotIn("work sessions", detail)
+        self.assertTrue(Asset.objects.filter(pk=asset.pk).exists())
+
+    def test_equipment_model_detail_with_a_nested_category(self):
+        """The list joined `category__parent`; the detail did not, and 500ed."""
+        parent = EquipmentCategory.objects.create(name="Vehicle", slug="vehicle")
+        child = EquipmentCategory.objects.create(
+            name="Tractor", slug="tractor-child", parent=parent
+        )
+        model = EquipmentModel.objects.create(
+            manufacturer=self.equipment_model.manufacturer, category=child, name="T-150"
+        )
+
+        response = self.client.get(
+            f"/api/v1/catalog/equipment-models/{model.public_id}", **self.auth()
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["category"]["parent_slug"], "vehicle")
+
     def test_another_orgs_asset_is_404_not_403(self):
         other_owner = User.objects.create_user(username="other-asset-owner")
         other_org = Organization.objects.create(name="Other", owner=other_owner)

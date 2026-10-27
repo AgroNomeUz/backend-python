@@ -105,6 +105,19 @@ class InquiryRenterOut(Schema):
     user: InquiryUserOut | None = None
 
 
+class InquiryDealOut(Schema):
+    """
+    The deal the provider turned this inquiry into — just enough for the
+    customer to find it and act on it (`POST /deals/{id}/confirm|decline`).
+    The full row is `deals.schemas.DealOut`, which `POST /inquiries/{id}/deal`
+    returns to the provider.
+    """
+
+    id: UUID = Field(alias="public_id")
+    status: str
+    deal_type: str
+
+
 class InquiryOut(Schema):
     """One inquiry, as its sender sees it."""
 
@@ -120,6 +133,15 @@ class InquiryOut(Schema):
     read: bool
     read_at: datetime | None = None
     created_at: datetime
+
+    # `deal_one_per_inquiry` makes this at most one; null until the provider
+    # proposes one. Both parties see it — the customer needs the id to confirm.
+    deal: InquiryDealOut | None = None
+
+    @staticmethod
+    def resolve_deal(obj):
+        # Read through the prefetch in `inquiries.views._inquiry_relations`.
+        return next(iter(obj.deals.all()), None)
 
     @staticmethod
     def resolve_listing_id(obj) -> UUID:

@@ -21,6 +21,11 @@ class RefreshToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_revoked = models.BooleanField(default=False)
+    # Set only when the token was spent by a refresh (not by logout or a
+    # password change). A rotated token is still honoured for a short grace
+    # window — see `REFRESH_GRACE` in api/views.py — so a reload or a second
+    # tab racing the first is not signed out.
+    rotated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [models.Index(fields=["token"])]
