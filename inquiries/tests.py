@@ -527,6 +527,52 @@ class InquiryDetailTests(InquiryTestCase):
         self.assertIsNone(sender_view["handled_by"])
 
 
+class InquiryDealFieldTests(InquiryTestCase):
+    """The deal id a customer needs to confirm, on every inquiry response."""
+
+    def setUp(self):
+        self.inquiry = self.make_inquiry()
+
+    def test_null_until_the_provider_proposes_a_deal(self):
+        for user, path in (
+            (self.seller_owner, f"{self.inquiry.public_id}"),
+            (self.buyer_owner, f"{self.inquiry.public_id}"),
+            (self.seller_owner, "received"),
+            (self.buyer_owner, "sent"),
+        ):
+            response = self.client.get(f"/api/v1/inquiries/{path}", **auth(user))
+            body = response.json()
+            row = body["items"][0] if "items" in body else body
+            self.assertIn("deal", row)
+            self.assertIsNone(row["deal"], path)
+
+    def test_both_parties_see_the_deal_once_it_exists(self):
+        from deals.models import Deal
+
+        deal = Deal.objects.create(
+            listing=self.inquiry.listing,
+            inquiry=self.inquiry,
+            provider_organization=self.inquiry.provider_organization,
+            customer_organization=self.inquiry.customer_organization,
+            deal_type=Deal.DealType.RENT,
+        )
+        expected = {
+            "id": str(deal.public_id),
+            "status": "pending_confirmation",
+            "deal_type": "rent",
+        }
+        for user, path in (
+            (self.seller_owner, f"{self.inquiry.public_id}"),
+            (self.buyer_owner, f"{self.inquiry.public_id}"),
+            (self.seller_owner, "received"),
+            (self.buyer_owner, "sent"),
+        ):
+            response = self.client.get(f"/api/v1/inquiries/{path}", **auth(user))
+            body = response.json()
+            row = body["items"][0] if "items" in body else body
+            self.assertEqual(row["deal"], expected, path)
+
+
 class ThreadReadTests(InquiryTestCase):
     """`GET /inquiries/{id}/messages` — the transcript, oldest first."""
 

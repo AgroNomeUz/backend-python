@@ -121,7 +121,11 @@ class FieldTests(FieldApiCase):
         self.assertEqual(boundary.created_by, self.a_manager)
         # One audit row, and it mentions the boundary.
         log = ActivityLog.objects.get(organization=self.a_org)
-        self.assertEqual(log.changes["boundary"]["to"]["id"], str(boundary.public_id))
+        # Readable in the history feed: a start date and an area, no UUID.
+        self.assertEqual(
+            log.changes["boundary"]["to"]["valid_from"], boundary.valid_from.isoformat()
+        )
+        self.assertNotIn("id", log.changes["boundary"]["to"])
 
     def test_area_is_not_derived_from_the_boundary(self):
         response = self.post(
@@ -372,7 +376,9 @@ class BoundaryTests(FieldApiCase):
         log = ActivityLog.objects.get(organization=self.a_org)
         self.assertEqual(log.action, ActivityLog.Action.UPDATED)
         self.assertIsNone(log.changes["boundary"]["from"])
-        self.assertEqual(log.changes["boundary"]["to"]["id"], body["id"])
+        self.assertEqual(
+            log.changes["boundary"]["to"]["valid_from"], body["valid_from"]
+        )
         self.assertEqual(log.changes["boundary"]["to"]["area"], float(body["area"]["value"]))
 
     def test_multipolygon_is_accepted(self):
@@ -411,8 +417,8 @@ class BoundaryTests(FieldApiCase):
         )
         # Audited: from the old boundary to the new one.
         log = ActivityLog.objects.filter(organization=self.a_org).first()
-        self.assertEqual(log.changes["boundary"]["from"]["id"], first["id"])
-        self.assertEqual(log.changes["boundary"]["to"]["id"], second.json()["id"])
+        self.assertEqual(log.changes["boundary"]["from"]["valid_from"], "2025-01-01")
+        self.assertEqual(log.changes["boundary"]["to"]["valid_from"], "2026-01-01")
 
         # The field reports the new one as current.
         detail = self.get(f"{FIELDS}/{field.public_id}").json()
@@ -566,7 +572,6 @@ class CropZoneTests(FieldApiCase):
             ZONES,
             self.body(
                 geometry=polygon_geojson(),
-                area={"value": "4.5", "unit": "har"},
                 planting_date="2026-03-01",
                 expected_harvest_date="2026-07-01",
             ),
@@ -578,7 +583,9 @@ class CropZoneTests(FieldApiCase):
         self.assertEqual(body["field"]["name"], "North")
         self.assertEqual(body["farm"]["name"], "A farm")
         self.assertEqual(body["season"]["name"], "2026")
-        self.assertEqual(body["area"], {"value": "4.5000", "unit": "har"})
+        # Computed from the geometry (a ~0.001 degree square), not supplied.
+        self.assertEqual(body["area"]["unit"], "har")
+        self.assertTrue(0.8 < float(body["area"]["value"]) < 1.1)
         self.assertEqual(body["geometry"]["type"], "MultiPolygon")
         self.assertEqual(body["external_references"], [])
         zone = CropZone.objects.get(public_id=body["id"])
@@ -672,7 +679,6 @@ class CropZoneTests(FieldApiCase):
             {
                 "crop_code": "horvx",
                 "crop_name": "Barley",
-                "area": {"value": "2", "unit": "har"},
                 "geometry": multipolygon_geojson(),
                 "harvest_date": "2026-08-01",
             },
@@ -681,6 +687,7 @@ class CropZoneTests(FieldApiCase):
         body = response.json()
         self.assertEqual(body["crop_code"], "HORVX")
         self.assertEqual(body["geometry"]["type"], "MultiPolygon")
+        self.assertTrue(0.8 < float(body["area"]["value"]) < 1.1)
         log = ActivityLog.objects.get(organization=self.a_org)
         self.assertEqual(log.action, ActivityLog.Action.UPDATED)
         self.assertEqual(log.changes["crop_name"], {"from": "Wheat", "to": "Barley"})
@@ -688,6 +695,94 @@ class CropZoneTests(FieldApiCase):
         # Clearing the geometry again.
         cleared = self.patch(f"{ZONES}/{zone.public_id}", {"geometry": None})
         self.assertIsNone(cleared.json()["geometry"])
+
+    # ── geometry vs. its field; computed area; readable history ──────────────
+
+    def outline(self, field, **kwargs):
+        """Give `field` an open boundary (default: a 0.01 degree square)."""
+        kwargs.setdefault("size", 0.01)
+        return self.post(
+            f"{FIELDS}/{field.public_id}/boundaries",
+            {"geometry": polygon_geojson(**kwargs)},
+        )
+
+    def test_geometry_inside_the_field_is_accepted_and_area_computed(self):
+        self.assertEqual(self.outline(self.field).status_code, 201)
+        response = self.post(
+            ZONES, self.body(geometry=polygon_geojson(lon=69.002, lat=41.002))
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        zone = CropZone.objects.get(public_id=response.json()["id"])
+        self.assertEqual(zone.area_unit, "har")
+        self.assertTrue(0.8 < float(zone.area) < 1.1)
+
+    def test_geometry_outside_the_field_is_400(self):
+        self.outline(self.field)
+        for shape in (
+            polygon_geojson(lon=70.0, lat=41.0),  # elsewhere entirely
+            polygon_geojson(lon=69.005, lat=41.005, size=0.01),  # straddles the edge
+        ):
+            response = self.post(ZONES, self.body(geometry=shape))
+            self.assertEqual(response.status_code, 400, response.content)
+            self.assertIn("within its field", response.json()["detail"])
+        self.assertFalse(CropZone.objects.exists())
+
+    def test_a_field_without_an_outline_accepts_any_geometry(self):
+        response = self.post(ZONES, self.body(geometry=polygon_geojson(lon=70.0)))
+        self.assertEqual(response.status_code, 201)
+
+    def test_area_and_geometry_together_is_400(self):
+        response = self.post(
+            ZONES,
+            self.body(
+                geometry=polygon_geojson(), area={"value": "4.5", "unit": "har"}
+            ),
+        )
+        self.assertEqual(response.status_code, 400)
+        zone = self.make_zone(self.field, geometry=_multi())
+        patched = self.patch(
+            f"{ZONES}/{zone.public_id}", {"area": {"value": "2", "unit": "har"}}
+        )
+        self.assertEqual(patched.status_code, 400)
+
+    def test_patch_geometry_is_checked_and_recomputes_area(self):
+        self.outline(self.field)
+        zone = self.post(
+            ZONES, self.body(geometry=polygon_geojson(lon=69.002, lat=41.002))
+        ).json()
+        outside = self.patch(
+            f"{ZONES}/{zone['id']}", {"geometry": polygon_geojson(lon=71.0)}
+        )
+        self.assertEqual(outside.status_code, 400)
+        bigger = self.patch(
+            f"{ZONES}/{zone['id']}",
+            {"geometry": polygon_geojson(lon=69.002, lat=41.002, size=0.004)},
+        )
+        self.assertEqual(bigger.status_code, 200, bigger.content)
+        self.assertGreater(
+            float(bigger.json()["area"]["value"]), float(zone["area"]["value"]) * 10
+        )
+
+    def test_moving_a_zone_to_a_field_it_does_not_fit_is_400(self):
+        self.outline(self.field)
+        zone = self.post(
+            ZONES, self.body(geometry=polygon_geojson(lon=69.002, lat=41.002))
+        ).json()
+        other = self.make_field(name="Elsewhere")
+        self.outline(other, lon=72.0)
+        moved = self.patch(f"{ZONES}/{zone['id']}", {"field_id": str(other.public_id)})
+        self.assertEqual(moved.status_code, 400)
+
+    def test_history_names_things_instead_of_ids_and_hashes(self):
+        zone = self.post(ZONES, self.body(geometry=polygon_geojson())).json()
+        log = ActivityLog.objects.get(organization=self.a_org)
+        self.assertEqual(log.changes["field"]["to"], "North")
+        self.assertEqual(log.changes["season"]["to"], "2026")
+        self.assertTrue(
+            log.changes["geometry"]["to"].startswith("MultiPolygon, 5 points, centre ")
+        )
+        self.assertNotIn(zone["id"], str(log.changes))
+        self.assertNotIn(str(self.field.public_id), str(log.changes))
 
     def test_noop_patch_writes_no_audit_row(self):
         zone = self.make_zone(self.field)

@@ -416,8 +416,9 @@ class FarmExternalReferenceTests(FarmApiCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(self.audit().count(), 4)
 
-    def test_unknown_system_is_400(self):
-        self.assertEqual(self.add(system="nope").status_code, 400)
+    def test_unknown_system_is_422(self):
+        # Declared as an enum on the schema, so the framework refuses it.
+        self.assertEqual(self.add(system="nope").status_code, 422)
         self.assertEqual(ExternalReference.objects.count(), 0)
         self.assertEqual(self.audit().count(), 0)
 

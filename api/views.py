@@ -11,6 +11,8 @@ an account is created is an org admin signing up, or an admin registering a
 member (§0.2).
 """
 
+from datetime import timedelta
+
 import jwt
 from asgiref.sync import sync_to_async
 from django.contrib.auth import aauthenticate
@@ -416,6 +418,12 @@ async def change_password(request, data: PasswordChangeIn, response: HttpRespons
     return await _issue_tokens(user, request, response)
 
 
+# How long a refresh token stays usable after it has been rotated. A browser
+# that reloads mid-refresh, or two tabs refreshing together, present the same
+# token twice; without this the second is refused and the user is signed out.
+REFRESH_GRACE = timedelta(seconds=30)
+
+
 class RefreshRefused(Exception):
     """A cookie-borne refresh token was rejected: answer 401 and clear it."""
 
@@ -467,21 +475,32 @@ async def token_refresh(request, response: HttpResponse, data: RefreshIn = None)
 
     try:
         stored = await (
-            RefreshToken.objects
-            .select_related("user")
-            .aget(token=token, is_revoked=False)
+            RefreshToken.objects.select_related("user").aget(token=token)
         )
     except RefreshToken.DoesNotExist:
         refuse("Refresh token not found or already revoked")
 
-    if stored.expires_at < timezone.now():
+    now = timezone.now()
+    if stored.is_revoked:
+        # Only a token spent by a *refresh* gets the grace window; logout and
+        # password changes revoke without `rotated_at` and stay final.
+        in_grace = (
+            stored.rotated_at is not None
+            and now - stored.rotated_at <= REFRESH_GRACE
+        )
+        if not in_grace:
+            refuse("Refresh token not found or already revoked")
+    if stored.expires_at < now:
         refuse("Refresh token expired")
     if not stored.user.is_active:
         refuse("Account is disabled")
 
-    # Rotate: revoke old, issue new pair
-    stored.is_revoked = True
-    await stored.asave(update_fields=["is_revoked"])
+    # Rotate: revoke old, issue new pair. Conditional, so of two concurrent
+    # refreshes only one stamps `rotated_at`; the loser is simply inside the
+    # grace window of the winner and gets its own fresh pair.
+    await RefreshToken.objects.filter(pk=stored.pk, is_revoked=False).aupdate(
+        is_revoked=True, rotated_at=now
+    )
 
     return await _new_token_pair(stored.user, request, response)
 

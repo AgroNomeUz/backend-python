@@ -13,7 +13,8 @@ of another org's object" posture `api_contract.md` §0.1 states for every
 other org-scoped lookup in this API, extended here to "an org with nothing
 public to show".
 
-All four endpoints are unauthenticated except `/contacts`, which requires a
+All four endpoints are unauthenticated except `/contacts` (and `/deals`, which
+takes optional auth only to fill in `role`), which requires a
 token but no permission code and no organization-membership check — the
 same "read is free" posture `/inquiries/{id}/messages` already uses: no
 `auth=` override on that one operation, so it inherits the API's default
@@ -30,6 +31,7 @@ from django.shortcuts import aget_object_or_404
 from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
 
+from api.auth import OptionalJWTBearer
 from deals.models import Deal, Review
 from listings.models import active_listings
 
@@ -155,11 +157,18 @@ async def get_organization_contacts(request, org_id: UUID):
 
 
 @organizations_router.get(
-    "/{org_id}/deals", response=list[OrganizationDealOut], auth=None
+    "/{org_id}/deals",
+    response=list[OrganizationDealOut],
+    auth=OptionalJWTBearer(),
 )
 @paginate(LimitOffsetPagination)
 async def list_organization_deals(request, org_id: UUID):
-    """Completed deals only, newest-completed first."""
+    """
+    Completed deals only, newest-completed first.
+
+    Optional auth: still public, but a signed-in caller gets `role` — their own
+    side of each deal — so the UI knows where a review can be left.
+    """
     org = await public_organization_or_404(org_id)
     return _org_deals_queryset(org)
 

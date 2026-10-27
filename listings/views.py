@@ -26,6 +26,7 @@ together.
 """
 
 import logging
+import os
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -729,7 +730,7 @@ def _apply_delete_image(request, organization, listing: Listing, image: ListingI
             organization,
             ActivityLog.Action.UPDATED,
             listing,
-            changes={"images": {"from": "removed", "to": str(image.public_id)}},
+            changes={"images": {"from": os.path.basename(image.file.name), "to": "removed"}},
         )
 
 

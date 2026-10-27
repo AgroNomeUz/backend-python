@@ -36,7 +36,9 @@ from .common import writable_organization
 
 
 class ExternalReferenceIn(Schema):
-    system: str
+    # Typed against the enum so an unknown system is a 422 and the OpenAPI
+    # schema lists the allowed values.
+    system: ExternalReference.ExternalSystem
     external_id: str = Field(min_length=1, max_length=255)
     external_version: str = Field("", max_length=64)
 
@@ -86,12 +88,6 @@ def _reference_label(ref: ExternalReference) -> str:
 
 def _apply_add_reference(request, organization, target, data: ExternalReferenceIn):
     """Sync transactional core of `add_reference`."""
-    if data.system not in ExternalReference.ExternalSystem.values:
-        raise HttpError(
-            400,
-            f"Unknown external system {data.system!r}; "
-            f"use one of {ExternalReference.ExternalSystem.values}.",
-        )
     duplicate = HttpError(
         409, "This object already has a reference with that system and id"
     )

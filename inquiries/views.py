@@ -118,7 +118,7 @@ def _inquiry_relations(queryset):
         "customer_organization__region",
         "created_by",
         "read_by",
-    )
+    ).prefetch_related("deals")
 
 
 def received_inquiries(organization: Organization):

@@ -251,6 +251,23 @@ class DealsAndReviewsListTests(OrganizationProfileTestCase):
         self.assertEqual(row["counterparty"]["display_name"], "Alisher K.")
         self.assertEqual(row["review"]["rating"], 4)
 
+    async def test_role_is_the_callers_side_of_the_deal(self):
+        from asgiref.sync import sync_to_async
+
+        await sync_to_async(self.make_deal)()
+        url = f"/organizations/{self.provider_org.public_id}/deals"
+
+        async def role(user=None):
+            headers = auth_headers(user) if user else {}
+            resp = await self.client.get(url, headers=headers)
+            self.assertEqual(resp.status_code, 200)
+            return resp.json()["items"][0]["role"]
+
+        self.assertEqual(await role(self.customer_owner), "customer")
+        self.assertEqual(await role(self.provider_owner), "provider")
+        self.assertIsNone(await role(self.stranger_owner))
+        self.assertIsNone(await role())  # anonymous: still public, no role
+
     async def test_a_deal_with_no_review_yet_carries_a_null_review(self):
         from asgiref.sync import sync_to_async
 

@@ -557,6 +557,62 @@ class LoginTests(AuthTestCase):
         self.assertEqual(self.login("+998900000000").status_code, 401)
 
 
+class RefreshRotationTests(AuthTestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="rotator", password="sekret-password-1", phone=PHONE
+        )
+        org = Organization.objects.create(name="Org", owner=cls.user)
+        cls.user.organization = org
+        cls.user.save(update_fields=["organization"])
+
+    def session(self) -> str:
+        return self.post(
+            "login", {"username": "rotator", "password": "sekret-password-1"}
+        ).json()["refresh_token"]
+
+    def test_rotation_issues_a_new_pair_and_retires_the_old_token(self):
+        old = self.session()
+        response = self.post("token/refresh", {"refresh_token": old})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotEqual(response.json()["refresh_token"], old)
+        stored = RefreshToken.objects.get(token=old)
+        self.assertTrue(stored.is_revoked)
+        self.assertIsNotNone(stored.rotated_at)
+
+    def test_a_second_tab_presenting_the_same_token_is_not_signed_out(self):
+        old = self.session()
+        first = self.post("token/refresh", {"refresh_token": old})
+        second = self.post("token/refresh", {"refresh_token": old})
+        self.assertEqual(second.status_code, 200, second.content)
+        # Both pairs are live: neither tab is logged out by the other.
+        for pair in (first, second):
+            self.assertEqual(
+                self.post(
+                    "token/refresh", {"refresh_token": pair.json()["refresh_token"]}
+                ).status_code,
+                200,
+            )
+
+    def test_the_grace_window_closes(self):
+        old = self.session()
+        self.post("token/refresh", {"refresh_token": old})
+        RefreshToken.objects.filter(token=old).update(
+            rotated_at=timezone.now() - timedelta(minutes=5)
+        )
+        self.assertEqual(
+            self.post("token/refresh", {"refresh_token": old}).status_code, 401
+        )
+
+    def test_logout_is_final_even_within_the_window(self):
+        refresh = self.session()
+        self.post("logout", {"refresh_token": refresh}, **auth(self.user))
+        self.assertEqual(
+            self.post("token/refresh", {"refresh_token": refresh}).status_code, 401
+        )
+
+
 class LogoutTests(AuthTestCase):
     @classmethod
     def setUpTestData(cls):
