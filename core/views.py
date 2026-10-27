@@ -44,8 +44,8 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
 
-from users.models import Organization
-from users.permissions import caller_organization
+from users.models import OrgPermission, Organization
+from users.permissions import readable_organization
 
 from .models import ActivityLog
 from .schemas import ActivityLogOut
@@ -193,7 +193,7 @@ async def list_activity(
     same query.
     """
     return await sync_to_async(filtered_activity)(
-        caller_organization(request),
+        readable_organization(request, OrgPermission.VIEW_ACTIVITY),
         action=action,
         target_type=target_type,
         target_id=target_id,

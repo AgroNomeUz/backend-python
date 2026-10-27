@@ -7,8 +7,9 @@ Two questions every write endpoint has to answer, in this order:
   1. *Which* organization is the caller acting for? → `caller_organization`
   2. Are they allowed to do this in it?            → `require_perm`
 
-Reads are open to any member of the organization; permissions only gate
-writes. Ownership is not a permission code — the owner passes every check
+`*.manage` codes gate writes and `*.view` codes gate reading the
+organization's private data (`readable_organization`); manage implies view.
+Ownership is not a permission code — the owner passes every check
 (`User.has_org_perm`), so an organization can never lock itself out.
 """
 
@@ -29,6 +30,13 @@ def caller_organization(request) -> Organization:
     if user.organization_id is None:
         raise HttpError(403, "Your account does not belong to an organization")
     return user.organization
+
+
+def readable_organization(request, code: str) -> Organization:
+    """The caller's organization, for a read that needs the `*.view` `code`."""
+    organization = caller_organization(request)
+    require_perm(request, code)
+    return organization
 
 
 def require_perm(request, code: str) -> None:

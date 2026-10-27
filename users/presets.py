@@ -21,7 +21,7 @@ registry exists to fix, not something a preset can paper over.
 
 from dataclasses import dataclass
 
-from .models import OrgPermission
+from .models import VIEW_PERMISSIONS, OrgPermission
 
 OWNER_PRESET_ID = "owner"
 
@@ -36,6 +36,10 @@ class Preset:
 
 P = OrgPermission
 
+# What every member could see before view permissions existed. The presets
+# below, and the backfill migration, both start from it.
+ALL_VIEW = VIEW_PERMISSIONS
+
 PRESETS: tuple[Preset, ...] = (
     Preset(
         "org_admin",
@@ -47,19 +51,19 @@ PRESETS: tuple[Preset, ...] = (
         "fleet_manager",
         "Fleet Manager",
         "Maintains machines and their listings.",
-        (P.MANAGE_EQUIPMENT.value,),
+        tuple(sorted((P.MANAGE_EQUIPMENT.value, *ALL_VIEW))),
     ),
     Preset(
         "sales",
         "Sales",
         "Publishes offers and answers inquiries.",
-        tuple(sorted((P.MANAGE_EQUIPMENT.value, P.MANAGE_INQUIRIES.value))),
+        tuple(sorted((P.MANAGE_EQUIPMENT.value, P.MANAGE_INQUIRIES.value, *ALL_VIEW))),
     ),
     Preset(
         "viewer",
         "Viewer",
         "Sees everything, changes nothing. For accountants and observers.",
-        (),
+        tuple(sorted(ALL_VIEW)),
     ),
 )
 

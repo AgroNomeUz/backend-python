@@ -31,8 +31,8 @@ from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
-from users.models import Organization
-from users.permissions import caller_organization
+from users.models import OrgPermission, Organization
+from users.permissions import readable_organization
 
 from .common import describe_geometry, geometry_from_geojson, writable_organization
 from .external_refs import add_reference_routes, attach_references, references_of
@@ -157,7 +157,7 @@ async def list_fields(
     cluster_id: UUID | None = None,
 ):
     """Fields of the caller's organization. `search` matches field or farm name."""
-    qs = org_fields(caller_organization(request))
+    qs = org_fields(readable_organization(request, OrgPermission.VIEW_FARMS))
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(farm__name__icontains=search))
     if farm_id:
@@ -230,7 +230,7 @@ async def create_field(request, data: FieldIn):
 @fields_router.get("/{field_id}", response=FieldOut)
 async def get_field(request, field_id: UUID):
     field = await aget_object_or_404(
-        org_fields(caller_organization(request)), public_id=field_id
+        org_fields(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=field_id
     )
     await attach_references([field])
     return field
@@ -317,7 +317,7 @@ async def delete_field(request, field_id: UUID):
 async def list_boundaries(request, field_id: UUID):
     """The field's boundary history, newest first."""
     field = await aget_object_or_404(
-        org_fields(caller_organization(request)), public_id=field_id
+        org_fields(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=field_id
     )
     return FieldBoundary.objects.filter(field=field).select_related("created_by")
 
@@ -398,7 +398,7 @@ async def add_boundary(request, field_id: UUID, data: BoundaryIn):
 @paginate(LimitOffsetPagination)
 async def field_activity(request, field_id: UUID):
     """Everything that ever happened to one field, newest first."""
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     field = await aget_object_or_404(org_fields(organization), public_id=field_id)
     return org_activity(organization).filter(
         content_type__model="field", object_id=field.pk
@@ -466,7 +466,7 @@ async def list_crop_zones(
     crop_code: str | None = None,
 ):
     """Crop zones of the caller's organization."""
-    qs = org_crop_zones(caller_organization(request))
+    qs = org_crop_zones(readable_organization(request, OrgPermission.VIEW_FARMS))
     if field_id:
         qs = qs.filter(field__public_id=field_id)
     if farm_id:
@@ -551,7 +551,7 @@ async def create_crop_zone(request, data: CropZoneIn):
 @crop_zones_router.get("/{zone_id}", response=CropZoneOut)
 async def get_crop_zone(request, zone_id: UUID):
     zone = await aget_object_or_404(
-        org_crop_zones(caller_organization(request)), public_id=zone_id
+        org_crop_zones(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=zone_id
     )
     await attach_references([zone])
     return zone
@@ -658,7 +658,7 @@ async def delete_crop_zone(request, zone_id: UUID):
 @paginate(LimitOffsetPagination)
 async def crop_zone_activity(request, zone_id: UUID):
     """Everything that ever happened to one crop zone, newest first."""
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_FARMS)
     zone = await aget_object_or_404(org_crop_zones(organization), public_id=zone_id)
     return org_activity(organization).filter(
         content_type__model="cropzone", object_id=zone.pk

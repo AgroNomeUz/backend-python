@@ -67,10 +67,13 @@ class ListingTestCase(TestCase):
         cls.owner.organization = cls.org
         cls.owner.save(update_fields=["organization"])
 
-        # A member with no permission codes — reads everything in the org,
-        # writes nothing (§0.2).
+        # A member holding only `equipment.view` — reads everything in the org,
+        # writes nothing.
         cls.member = User.objects.create_user(
-            username="listing-member", password="x", organization=cls.org
+            username="listing-member",
+            password="x",
+            organization=cls.org,
+            permissions=[OrgPermission.VIEW_EQUIPMENT],
         )
 
         cls.rival_owner = User.objects.create_user(username="rival-owner", password="x")

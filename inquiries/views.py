@@ -38,7 +38,7 @@ from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from listings.views import published_listings
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, require_perm
+from users.permissions import caller_organization, readable_organization, require_perm
 
 from .models import Inquiry, InquiryMessage
 from .schemas import (
@@ -262,7 +262,7 @@ async def list_received_inquiries(
     the unanswered queue; `handled_by` answers "what has this member picked
     up?" (§0.3).
     """
-    qs = received_inquiries(caller_organization(request))
+    qs = received_inquiries(readable_organization(request, OrgPermission.VIEW_INQUIRIES))
     if read is not None:
         qs = qs.filter(read_at__isnull=not read)
     if handled_by:
@@ -286,7 +286,7 @@ async def list_sent_inquiries(
     the *other* organization, and who over there opened the message is not a
     read receipt they owe us.
     """
-    qs = sent_inquiries(caller_organization(request))
+    qs = sent_inquiries(readable_organization(request, OrgPermission.VIEW_INQUIRIES))
     if created_by:
         qs = qs.filter(created_by__public_id=created_by)
     if listing_id:
@@ -371,7 +371,7 @@ async def get_inquiry(request, inquiry_id: UUID):
     one inquiry by id at all, rather than finding it inside the first page of
     `/received` or `/sent`.
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_INQUIRIES)
     return await aget_object_or_404(
         party_inquiries(organization), public_id=inquiry_id
     )
@@ -388,7 +388,7 @@ async def list_inquiry_messages(request, inquiry_id: UUID):
     party, same as the inquiry itself. Never empty — every inquiry carries at
     least its opening message, new or backfilled (see `InquiryMessage`).
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_INQUIRIES)
     inquiry = await aget_object_or_404(
         party_inquiries(organization), public_id=inquiry_id
     )

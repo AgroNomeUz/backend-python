@@ -8,7 +8,7 @@ from django.test import TestCase
 
 from api.auth import create_access_token
 from core.models import ActivityLog
-from users.models import OrgPermission, Organization, User
+from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, User
 
 P = OrgPermission
 
@@ -30,11 +30,16 @@ class IamTests(TestCase):
                 username=name, organization=cls.org, permissions=sorted(perms), **kw
             )
 
-        cls.fleet = member("fleet", [P.MANAGE_EQUIPMENT])
-        cls.sales = member("sales", [P.MANAGE_EQUIPMENT, P.MANAGE_INQUIRIES])
-        cls.viewer = member("viewer", [])
+        cls.fleet = member("fleet", [P.MANAGE_EQUIPMENT, *VIEW_PERMISSIONS])
+        cls.sales = member(
+            "sales", [P.MANAGE_EQUIPMENT, P.MANAGE_INQUIRIES, *VIEW_PERMISSIONS]
+        )
+        cls.viewer = member("viewer", VIEW_PERMISSIONS)
+        cls.blind = member("blind", [])
         cls.custom = member("custom", [P.MANAGE_USERS])
-        cls.gone = member("gone", [P.MANAGE_EQUIPMENT], is_active=False)
+        cls.gone = member(
+            "gone", [P.MANAGE_EQUIPMENT, *VIEW_PERMISSIONS], is_active=False
+        )
 
         other_owner = User.objects.create_user(username="other")
         other = Organization.objects.create(name="Other", owner=other_owner)
@@ -70,7 +75,7 @@ class IamTests(TestCase):
 
         self.assertEqual(names("owner"), {"owner"})
         self.assertEqual(names("fleet_manager"), {"fleet", "gone"})
-        self.assertEqual(names("custom"), {"custom"})
+        self.assertEqual(names("custom"), {"custom", "blind"})
         self.assertEqual(self.get("members?preset=nope").status_code, 400)
 
     def test_last_activity_is_the_newest_row_the_member_acted_in(self):

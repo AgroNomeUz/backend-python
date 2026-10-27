@@ -40,7 +40,7 @@ from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, require_perm
+from users.permissions import caller_organization, readable_organization, require_perm
 
 from .models import (
     Asset,
@@ -272,7 +272,7 @@ async def list_assets(
     bookable: bool | None = None,
 ):
     """Machines registered to the caller's organization."""
-    qs = org_assets(caller_organization(request))
+    qs = org_assets(readable_organization(request, OrgPermission.VIEW_EQUIPMENT))
 
     if search:
         qs = qs.filter(
@@ -337,7 +337,7 @@ async def create_asset(request, data: AssetIn):
 @assets_router.get("/{asset_id}", response=AssetOut)
 async def get_asset(request, asset_id: UUID):
     return await aget_object_or_404(
-        org_assets(caller_organization(request)), public_id=asset_id
+        org_assets(readable_organization(request, OrgPermission.VIEW_EQUIPMENT)), public_id=asset_id
     )
 
 
@@ -457,7 +457,7 @@ async def asset_activity(request, asset_id: UUID):
     are correct; this one is the better one when the client already knows it
     is looking at one of its own machines.
     """
-    organization = caller_organization(request)
+    organization = readable_organization(request, OrgPermission.VIEW_EQUIPMENT)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
     return org_activity(organization).filter(
         content_type__model="asset", object_id=asset.pk

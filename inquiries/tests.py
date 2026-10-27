@@ -54,12 +54,13 @@ class InquiryTestCase(TestCase):
         )
         cls.seller_owner.organization = cls.seller_org
         cls.seller_owner.save(update_fields=["organization"])
-        # No permission codes: reads everything in the org, writes nothing.
+        # View codes only: reads everything in the org, writes nothing.
         cls.seller_member = User.objects.create_user(
             username="seller-member",
             password="x",
             organization=cls.seller_org,
             full_name="Seller Member",
+            permissions=[OrgPermission.VIEW_INQUIRIES],
         )
 
         cls.buyer_owner = User.objects.create_user(
@@ -78,6 +79,7 @@ class InquiryTestCase(TestCase):
             password="x",
             organization=cls.buyer_org,
             full_name="Buyer Member",
+            permissions=[OrgPermission.VIEW_INQUIRIES],
         )
 
         manufacturer = Manufacturer.objects.create(name="MTZ")

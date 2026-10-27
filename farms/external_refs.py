@@ -30,7 +30,8 @@ from ninja.errors import HttpError
 from core.audit import log_activity
 from core.models import ActivityLog
 from equipment.models import ExternalReference
-from users.permissions import caller_organization
+from users.models import OrgPermission
+from users.permissions import readable_organization
 
 from .common import writable_organization
 
@@ -163,7 +164,7 @@ def add_reference_routes(router, resource: str, target_queryset) -> None:
     )
     async def list_external_references(request, target_id: UUID):
         target = await aget_object_or_404(
-            target_queryset(caller_organization(request)), public_id=target_id
+            target_queryset(readable_organization(request, OrgPermission.VIEW_FARMS)), public_id=target_id
         )
         # `references_of` resolves the ContentType, which may hit the database.
         return await sync_to_async(lambda: list(references_of(target)))()
