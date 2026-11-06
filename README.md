@@ -18,7 +18,7 @@ hidden for non-B2B users.
 | Layer           | Technology                          |
 |-----------------|-------------------------------------|
 | Language        | Python 3.14                         |
-| Framework       | Django 5                            |
+| Framework       | Django 6                            |
 | API             | django-ninja (OpenAPI, async-ready) |
 | Auth            | JWT (PyJWT) — access + refresh flow |
 | Database        | PostgreSQL 16                       |
@@ -77,10 +77,9 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 - One django-ninja **router per app**, mounted under a namespace
   (`/api/auth/…`, `/api/equipment/…`, `/api/market/…`) — the API is already
   shaped like service boundaries without the distributed-systems cost.
-- **Cross-app writes go through services**, e.g.
-  `equipment.services.confirm_booking()` — views and other apps never mutate
-  foreign models directly. Status transitions (`Booking.ALLOWED_TRANSITIONS`)
-  are enforced there.
+- **Cross-app writes go through services**, e.g. `marketplace/contract_services.py`
+  — views and other apps never mutate foreign models directly. Status
+  transitions are enforced there.
 - **Async work** (notifications, telemetry ingestion) goes to a task queue
   (Celery/Dramatiq), not into request handlers.
 
@@ -114,7 +113,7 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 
 ### Prerequisites
 - Docker & docker-compose
-- A `.env` file at the project root (see `.env.example` when created)
+- A `.env` file at the project root (copy `.env.example` and fill it in)
 
 ### Start services
 
@@ -411,7 +410,7 @@ survive deletion of their target. Status-only edits are recorded as
 `status_changed` rather than `updated`. New write endpoints must log here too;
 use `ActivityLog.record()` with the helpers in `core/audit.py`.
 
-Full interactive docs at `/api/docs` (Swagger UI via django-ninja).
+Full interactive docs at `/api/v1/docs` (Swagger UI via django-ninja).
 
 ---
 

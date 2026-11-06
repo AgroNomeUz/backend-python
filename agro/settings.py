@@ -227,15 +227,6 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static'), ]
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_FINDERS = [
-    "django.contrib.staticfiles.finders.FileSystemFinder",
-    "django.contrib.staticfiles.finders.AppDirectoriesFinder",
-]
-
-# STORAGES = {
-#     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-#     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
-# }
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
@@ -349,7 +340,6 @@ LOGGING = {
 }
 
 if ENVIRONMENT == 'production':
-    SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = 'DENY'
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 3600
