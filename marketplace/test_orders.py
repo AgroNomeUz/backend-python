@@ -8,7 +8,7 @@ happen once, and always finish by checking the balances.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
@@ -768,6 +768,23 @@ class NoMoneyLeftStrandedTests(MarketTestCase):
         self.assertEqual(jobs.run_all()["auto_accepted"], 0)
         day_after = order.acceptance_deadline.astimezone(ZoneInfo("Asia/Tashkent")).date()
         self.assertEqual(day_after, self.today + timedelta(days=4))
+
+    @override_settings(ORDER_ACCEPTANCE_HOURS=6)
+    def test_the_delivery_day_ends_at_tashkent_midnight(self):
+        evening = datetime(2026, 3, 10, 18, 0, tzinfo=UTC)
+        with mock.patch("django.utils.timezone.now", return_value=evening):
+            deadline = services._deadline_after_dispatch(date(2026, 3, 11))
+        self.assertEqual(deadline, datetime(2026, 3, 12, 1, 0, tzinfo=UTC))
+
+    @override_settings(ORDER_CONFIRM_HOURS=6)
+    def test_a_delivery_must_be_confirmed_before_its_tashkent_day_starts(self):
+        # 01:00 on the 11th in Tashkent, still the 10th in UTC.
+        evening = datetime(2026, 3, 10, 20, 0, tzinfo=UTC)
+        with mock.patch("django.utils.timezone.now", return_value=evening):
+            tomorrow = services.confirm_deadline(date(2026, 3, 12))
+            today = services.confirm_deadline(date(2026, 3, 11))
+        self.assertEqual(tomorrow, datetime(2026, 3, 11, 19, 0, tzinfo=UTC))
+        self.assertEqual(today, evening + timedelta(hours=6))
 
     def test_pressing_delivered_early_cannot_rush_the_buyer(self):
         order = self.order_at(
