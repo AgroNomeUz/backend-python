@@ -905,6 +905,62 @@ class AdminLoginLimitTests(AuthTestCase):
         self.assertContains(self.admin_login("sekret-password-1"), "Too many failed")
 
 
+@DEVELOPMENT
+class FirstPasswordTests(AuthTestCase):
+    NEW_PASSWORD = "my-own-password-9"
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.owner = self.make_org(phone=PHONE)
+
+    def change(self, user=None, new_password=NEW_PASSWORD, **proof):
+        return self.client.post(
+            "/api/v1/auth/password/change",
+            data={"new_password": new_password, **proof},
+            content_type="application/json",
+            **auth(user or self.owner),
+        )
+
+    def test_a_code_sets_the_first_password(self):
+        response = self.change(code=self.request_code())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        login = self.post("login", {"username": PHONE, "password": self.NEW_PASSWORD})
+        self.assertEqual(login.status_code, 200, login.content)
+
+    def test_a_session_alone_sets_nothing(self):
+        self.assertEqual(self.change().status_code, 400)
+        self.assertEqual(self.change(code="000000").status_code, 400)
+        self.owner.refresh_from_db()
+        self.assertFalse(self.owner.has_usable_password())
+
+    def test_a_rejected_password_does_not_spend_the_code(self):
+        code = self.request_code()
+
+        self.assertEqual(self.change(code=code, new_password="123").status_code, 400)
+        self.assertEqual(self.change(code=code).status_code, 200)
+
+    def test_no_phone_and_no_password_is_refused(self):
+        member = self.make_org(username="phoneless")
+
+        response = self.change(member, code="000000")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no phone number", response.json()["detail"])
+
+    def test_a_code_does_not_replace_a_password_that_exists(self):
+        self.owner.set_password("existing-password-1")
+        self.owner.save(update_fields=["password"])
+
+        response = self.change(code=self.request_code())
+
+        self.assertEqual(response.status_code, 400)
+        self.owner.refresh_from_db()
+        self.assertTrue(self.owner.check_password("existing-password-1"))
+
+
 class TemporaryPasswordTests(AuthTestCase):
     def setUp(self):
         super().setUp()

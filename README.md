@@ -200,7 +200,7 @@ docker compose logs scheduler | grep "SCHEDULER FAILED"
 | `/api/v1/auth/login`           | POST   | None  | Password login (phone, email or username) |
 | `/api/v1/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
 | `/api/v1/auth/logout`          | POST   | JWT   | Revoke the presented refresh token |
-| `/api/v1/auth/password/change` | POST   | JWT   | Set your own password; clears `must_change_password` |
+| `/api/v1/auth/password/change` | POST   | JWT   | Set your own password with `current_password`, or with `code` if the account has none yet; clears `must_change_password` |
 
 Five wrong passwords lock an account's password login for 15 minutes (`429`).
 Codes only go to Uzbek numbers, `+998` and nine digits. A member still on a
@@ -213,6 +213,11 @@ back-office, and is how an employee uses the one-time password their admin
 gave them. There is no open self-registration: an unknown phone number is
 never turned into an account by itself — it gets a short-lived, single-use
 `signup_token` that only `POST /auth/org/signup` accepts.
+
+An owner who signed up by OTP has no password. To set a first one, they ask
+`POST /auth/otp/request` for a code and send it as `code` to
+`POST /auth/password/change`, in place of `current_password`. An account with
+neither a password nor a phone cannot use this route.
 
 There is no SMS gateway yet — `api/sms.py` is the seam, and it delivers
 nothing. A passcode is a bearer credential (anyone holding it can exchange it

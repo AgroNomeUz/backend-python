@@ -400,25 +400,41 @@ async def login(request, data: LoginIn, response: HttpResponse):
     return await _issue_tokens(user, request, response, User.LoginMethod.PASSWORD)
 
 
-def _change_password(user: User, current_password: str, new_password: str) -> None:
+def _change_password(user: User, data: PasswordChangeIn) -> None:
     """
     Replace a user's password and invalidate every session built on the old one.
+
+    An account with no password has nothing to present, so a code sent to its
+    phone stands in: a session alone must not be enough to set one.
 
     Sync because it touches password hashing, the project's password
     validators and a bulk update — all of which want the ORM's sync path.
     """
-    if not user.check_password(current_password):
-        raise HttpError(400, "Current password is incorrect")
-    if current_password == new_password:
-        raise HttpError(400, "The new password must differ from the current one")
+    has_password = user.has_usable_password()
+    if has_password:
+        if not user.check_password(data.current_password):
+            raise HttpError(400, "Current password is incorrect")
+        if data.current_password == data.new_password:
+            raise HttpError(400, "The new password must differ from the current one")
+    elif not user.phone:
+        raise HttpError(400, "Your account has no phone number to confirm this with")
+    elif not data.code:
+        raise HttpError(400, "Enter the code sent to your phone")
 
     try:
-        validate_password(new_password, user)
+        validate_password(data.new_password, user)
     except ValidationError as exc:
         raise HttpError(400, " ".join(exc.messages))
 
+    # Last, so a rejected password does not spend the code.
+    if not has_password:
+        try:
+            verify_otp(user.phone, data.code)
+        except OtpInvalid as exc:
+            raise HttpError(400, str(exc))
+
     with transaction.atomic():
-        user.set_password(new_password)
+        user.set_password(data.new_password)
         # Clears the flag set when an admin issued a one-time password.
         user.must_change_password = False
         user.save(update_fields=["password", "must_change_password"])
@@ -437,11 +453,13 @@ async def change_password(request, data: PasswordChangeIn, response: HttpRespons
     Set your own password — the step that clears `must_change_password`.
 
     Employees added by an org admin sign in with a one-time password and land
-    here. All existing refresh tokens are revoked and a fresh pair is issued,
-    so other devices have to log in again.
+    here. An owner who signed up by OTP has no password yet, and presents a
+    `code` from `/auth/otp/request` instead of `current_password`. All existing
+    refresh tokens are revoked and a fresh pair is issued, so other devices
+    have to log in again.
     """
     user = request.auth
-    await _change_password_async(user, data.current_password, data.new_password)
+    await _change_password_async(user, data)
     return await _issue_tokens(user, request, response)
 
 
