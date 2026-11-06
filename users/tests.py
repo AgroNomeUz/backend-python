@@ -646,7 +646,7 @@ class PhoneChangeTests(ProfileTestCase):
     def test_the_swap_revokes_every_session(self):
         session = RefreshToken.objects.create(
             user=self.member,
-            token="old-session",
+            token_hash="old-session",
             expires_at=timezone.now() + timedelta(days=1),
         )
         self.start()

@@ -36,7 +36,8 @@ class RefreshTokenAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "user__phone", "user__email")
     ordering = ("-created_at",)
     raw_id_fields = ("user",)
-    readonly_fields = ("user", "token", "created_at", "expires_at")
+    readonly_fields = ("user", "created_at", "expires_at")
+    exclude = ("token_hash",)
 
     def has_add_permission(self, request):
         return False

@@ -51,7 +51,7 @@ def create_refresh_token(user_public_id) -> str:
         "type": "refresh",
         # `iat`/`exp` have one-second resolution, so without a nonce two
         # logins in the same second encode to the identical string — and
-        # `RefreshToken.token` is unique, which turned that into a 500.
+        # `RefreshToken.token_hash` is unique, which turned that into a 500.
         "jti": uuid.uuid4().hex,
         "iat": now,
         "exp": now + REFRESH_TOKEN_LIFETIME,

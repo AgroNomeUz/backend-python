@@ -174,7 +174,7 @@ the local compose file and a bare `runserver` have no scheduled jobs:
 ```bash
 python manage.py run_market_jobs    # every 5 minutes: order deadlines, auto-accept, contract deliveries
 python manage.py reconcile_ledger   # daily: exits non-zero if the books disagree
-python manage.py purge_auth_rows    # daily: clears out expired auth rows
+python manage.py purge_auth_rows    # daily: expired refresh tokens, phone codes over a day old
 ```
 
 Without `run_market_jobs`, a delivered order is never accepted automatically
@@ -231,6 +231,9 @@ default and both refuse to run when `ENVIRONMENT=production`:
 The limits around it are real — a 60s resend cooldown, hourly caps per number
 and per IP, and 5 attempts per code, all counted off the `api.PhoneOtp` table
 (tunable in `settings.py`).
+
+Refresh tokens are stored as SHA-256 digests in `api.RefreshToken.token_hash`,
+so a database dump opens no sessions. The client still sends the raw JWT.
 
 Every auth payload carries the caller's effective `permissions`, `is_owner`
 and `must_change_password` so the frontend can route a freshly-registered

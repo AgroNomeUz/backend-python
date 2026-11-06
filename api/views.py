@@ -66,7 +66,7 @@ from .cookies import (
     set_refresh_cookie,
     wants_cookie,
 )
-from .models import RefreshToken
+from .models import RefreshToken, hash_refresh_token
 from .otp import OtpInvalid, OtpThrottled, claim_signup_otp, issue_otp, verify_otp
 from .public import public_router
 from .regions import regions_router
@@ -141,7 +141,7 @@ async def _new_token_pair(user: User, request, response: HttpResponse) -> dict:
     refresh = create_refresh_token(user.public_id)
     await RefreshToken.objects.acreate(
         user=user,
-        token=refresh,
+        token_hash=hash_refresh_token(refresh),
         expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
     )
     if wants_cookie(request):
@@ -508,7 +508,9 @@ async def token_refresh(request, response: HttpResponse, data: RefreshIn = None)
 
     try:
         stored = await (
-            RefreshToken.objects.select_related("user").aget(token=token)
+            RefreshToken.objects.select_related("user").aget(
+                token_hash=hash_refresh_token(token)
+            )
         )
     except RefreshToken.DoesNotExist:
         refuse("Refresh token not found or already revoked")
@@ -551,7 +553,7 @@ async def logout(request, response: HttpResponse, data: LogoutIn = None):
     token, from_cookie = _presented_refresh_token(request, data)
     if token:
         await RefreshToken.objects.filter(
-            user=request.auth, token=token, is_revoked=False
+            user=request.auth, token_hash=hash_refresh_token(token), is_revoked=False
         ).aupdate(is_revoked=True)
     if wants_cookie(request):
         clear_refresh_cookie(response)

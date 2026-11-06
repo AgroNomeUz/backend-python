@@ -12,6 +12,7 @@ suite from noticing if the leak came back.
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from io import StringIO
 from itertools import count
 from threading import Barrier
 from time import sleep
@@ -19,13 +20,15 @@ from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
+from django.core.management import call_command
 from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from api.auth import create_access_token, create_signup_token
 from core.test_support import auth
-from api.models import PhoneOtp, RefreshToken
+from api.models import PhoneOtp, RefreshToken, hash_refresh_token
 from api.otp import OtpThrottled, issue_otp
 from api.sms import mask_phone
 from core.models import ActivityLog
@@ -580,7 +583,7 @@ class RefreshRotationTests(AuthTestCase):
         response = self.post("token/refresh", {"refresh_token": old})
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.json()["refresh_token"], old)
-        stored = RefreshToken.objects.get(token=old)
+        stored = RefreshToken.objects.get(token_hash=hash_refresh_token(old))
         self.assertTrue(stored.is_revoked)
         self.assertIsNotNone(stored.rotated_at)
 
@@ -601,7 +604,7 @@ class RefreshRotationTests(AuthTestCase):
     def test_the_grace_window_closes(self):
         old = self.session()
         self.post("token/refresh", {"refresh_token": old})
-        RefreshToken.objects.filter(token=old).update(
+        RefreshToken.objects.filter(token_hash=hash_refresh_token(old)).update(
             rotated_at=timezone.now() - timedelta(minutes=5)
         )
         self.assertEqual(
@@ -638,7 +641,7 @@ class LogoutTests(AuthTestCase):
         response = self.post("logout", {"refresh_token": refresh}, **auth(self.user))
 
         self.assertEqual(response.status_code, 204)
-        self.assertTrue(RefreshToken.objects.get(token=refresh).is_revoked)
+        self.assertTrue(RefreshToken.objects.get(token_hash=hash_refresh_token(refresh)).is_revoked)
         # The session can no longer be extended.
         self.assertEqual(
             self.post("token/refresh", {"refresh_token": refresh}).status_code, 401
@@ -649,7 +652,7 @@ class LogoutTests(AuthTestCase):
 
         self.post("logout", {"refresh_token": first}, **auth(self.user))
 
-        self.assertFalse(RefreshToken.objects.get(token=second).is_revoked)
+        self.assertFalse(RefreshToken.objects.get(token_hash=hash_refresh_token(second)).is_revoked)
 
     def test_cannot_revoke_someone_elses_session(self):
         refresh = self.session()
@@ -660,7 +663,7 @@ class LogoutTests(AuthTestCase):
         )
 
         self.assertEqual(response.status_code, 204)
-        self.assertFalse(RefreshToken.objects.get(token=refresh).is_revoked)
+        self.assertFalse(RefreshToken.objects.get(token_hash=hash_refresh_token(refresh)).is_revoked)
 
     def test_requires_authentication(self):
         response = self.post("logout", {"refresh_token": self.session()})
@@ -760,6 +763,62 @@ class OtpThrottleCostTests(AuthTestCase):
         with patch("api.otp.make_password") as hasher, self.assertRaises(OtpThrottled):
             issue_otp(PHONE)
         hasher.assert_not_called()
+
+
+class RefreshTokenAtRestTests(AuthTestCase):
+    def test_admin_does_not_show_the_hash(self):
+        staff = User.objects.create_superuser(username="staff")
+        row = RefreshToken.objects.create(
+            user=staff, token_hash="b" * 64, expires_at=timezone.now()
+        )
+        self.client.force_login(staff)
+
+        page = self.client.get(f"/admin/api/refreshtoken/{row.pk}/change/")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, row.token_hash)
+
+    def test_purge_deletes_only_what_is_past_its_use(self):
+        user = self.make_org()
+        now = timezone.now()
+        for name, expires_at in (("dead", now - timedelta(minutes=1)), ("live", now + timedelta(days=1))):
+            RefreshToken.objects.create(user=user, token_hash=name, expires_at=expires_at)
+        old, fresh = (
+            PhoneOtp.objects.create(phone=PHONE, code_hash="-", expires_at=now)
+            for _ in range(2)
+        )
+        PhoneOtp.objects.filter(pk=old.pk).update(created_at=now - timedelta(days=1, minutes=1))
+        PhoneOtp.objects.filter(pk=fresh.pk).update(created_at=now - timedelta(hours=23))
+        out = StringIO()
+
+        call_command("purge_auth_rows", stdout=out)
+
+        self.assertEqual(
+            list(RefreshToken.objects.values_list("token_hash", flat=True)), ["live"]
+        )
+        self.assertEqual(list(PhoneOtp.objects.all()), [fresh])
+        self.assertIn("1 refresh tokens", out.getvalue())
+        self.assertIn("1 phone OTPs", out.getvalue())
+
+
+class RefreshTokenHashMigrationTests(TransactionTestCase):
+    BEFORE = [("api", "0003_refreshtoken_rotated_at")]
+    AFTER = [("api", "0004_refreshtoken_token_hash")]
+
+    def test_existing_tokens_are_hashed_in_place(self):
+        executor = MigrationExecutor(connection)
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(self.AFTER))
+        executor.migrate(self.BEFORE)
+        old_apps = executor.loader.project_state(self.BEFORE).apps
+        user = User.objects.create_user(username="old-session")
+        old_apps.get_model("api", "RefreshToken").objects.create(
+            user_id=user.pk, token="raw.jwt.value", expires_at=timezone.now()
+        )
+
+        MigrationExecutor(connection).migrate(self.AFTER)
+
+        stored = RefreshToken.objects.get()
+        self.assertEqual(stored.token_hash, hash_refresh_token("raw.jwt.value"))
 
 
 class LoginLimitTests(AuthTestCase):
