@@ -269,6 +269,18 @@ class SigningTests(MarketTestCase):
         response = self.post(contract_path(contract, "accept"), answer(contract), self.seller_owner)
         self.assertEqual(response.status_code, 200, response.content)
 
+    def test_a_version_your_own_side_replaced_is_a_conflict_too(self):
+        contract = self.proposed()
+        read = answer(contract)
+        self.post(
+            contract_path(contract, "amend"),
+            self.contract_terms(unit_price="9000.00"),
+            self.seller_owner,
+        )
+        for action in ("accept", "reject"):
+            response = self.post(contract_path(contract, action), read, self.seller_owner)
+            self.assertEqual(response.status_code, 409, response.content)
+
     def test_an_answer_has_to_name_a_version(self):
         contract = self.proposed()
         response = self.post(contract_path(contract, "accept"), user=self.seller_owner)

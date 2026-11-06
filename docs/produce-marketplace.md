@@ -156,16 +156,18 @@ refunded.
 | --- | --- |
 | `market.manage` / `market.view` | Offers, purchase requests, quotes, order handling |
 | `contracts.manage` / `contracts.view` | Proposing, signing, amending and terminating contracts. Binding the organization for months is a different level of trust from answering an order |
-| `billing.manage` / `billing.view` | Paying, topping up, payout destinations, withdrawals; reading the wallet |
+| `billing.manage` / `billing.view` | Paying, topping up, removing payout destinations, withdrawals; reading the wallet |
 
 New codes are not backfilled onto existing staff: nobody gains access to money
 by deploying this. Nobody can grant a code they lack, or take over the account
 of someone who holds one. Adding a payout destination also needs a one-time code, and a
 new destination cannot receive money for `BILLING_PAYOUT_COOLDOWN_HOURS`,
 because a changed payout account is the classic way to steal a seller's money.
-That code goes to the organization owner's phone, whoever is adding the account.
-Staff cannot move that number and the owner moves it only with proof of the old
-one, so a stolen session of any rank cannot redirect it.
+Only the owner can add one, with a code sent to their own phone: `billing.manage`
+withdraws to an account, it does not add one. Staff cannot move that number and
+the owner moves it only with proof of the old one, so a stolen session of any
+rank cannot confirm an account. A code is never relayed between people, because
+it would also log its reader in as the owner.
 
 ## Not built yet
 

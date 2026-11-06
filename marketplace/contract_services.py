@@ -218,9 +218,9 @@ def accept_terms(actor: Actor, contract: SupplyContract, version: int) -> Supply
         terms = pending_terms(contract)
         if terms is None:
             raise HttpError(409, "Nothing is waiting to be accepted.")
+        _require_version_read(terms, version)
         if terms.proposed_by_side == actor.side:
             raise HttpError(403, "The other side has to accept what you proposed.")
-        _require_version_read(terms, version)
 
         now = timezone.now()
         terms.status = TermsStatus.ACCEPTED
@@ -254,9 +254,9 @@ def reject_terms(actor: Actor, contract: SupplyContract, version: int) -> Supply
     terms = pending_terms(contract)
     if terms is None:
         raise HttpError(409, "Nothing is waiting for an answer.")
+    _require_version_read(terms, version)
     if terms.proposed_by_side == actor.side:
         raise HttpError(403, "You proposed this. Propose something else to replace it.")
-    _require_version_read(terms, version)
 
     terms.status = TermsStatus.REJECTED
     terms.decided_by = actor.user

@@ -330,8 +330,9 @@ between the two, not an oversight.
 one**, because phone is the login identifier: an unverified swap on a typo locks
 the account out, and a deliberate one is a takeover. The proof of the old one is
 a code sent to it, or `current_password` for an account that has no number yet.
-Without it a stolen access token could move the number, then receive the
-payout-destination code and log in by SMS for good. The new number is checked to
+Without it a stolen access token could move the number and log in by SMS for
+good, and on the owner's account it would also receive the payout-destination
+code. The new number is checked to
 be free *before* a code is spent on it, the swap is audited, and it revokes every
 refresh token, so the client signs in again. `PATCH /users/me` therefore has no
 `phone` field.
@@ -383,7 +384,7 @@ an order and a contract work.
 | `/api/v1/billing/wallet`, `/wallet/entries` | GET | `billing.view` | Balance, money held in open orders, and the statement |
 | `/api/v1/billing/top-ups` | POST | `billing.manage` | Add money; the buyer finishes at `checkout_url` |
 | `/api/v1/billing/payments` | GET | `billing.view` | Money that came in |
-| `/api/v1/billing/payout-destinations` | GET, POST, DELETE | `billing.view`, `billing.manage` | Accounts to withdraw to. Adding one needs the code `POST /payout-destinations/code` texts to the organization owner, and then waits out a cooling-off period |
+| `/api/v1/billing/payout-destinations` | GET, POST, DELETE | `billing.view`, `billing.manage` | Accounts to withdraw to. Only the organization owner can add one, with the code `POST /payout-destinations/code` texts to them, and it then waits out a cooling-off period |
 | `/api/v1/billing/payouts` | GET, POST | `billing.view`, `billing.manage` | Withdrawals |
 | `/api/v1/billing/webhooks/{provider}` | POST | Signed | Provider events |
 | `/api/v1/billing/payments/{id}/mock-complete`, `/payouts/{id}/mock-complete` | POST | `billing.manage` | **Development only.** Stand in for the provider, and 404 in production |
@@ -439,7 +440,7 @@ from Django's own `auth.Permission` machinery, which stays for the admin site.
 | `users.manage`     | Every write under `/api/v1/members`          |
 | `market.manage`    | Offers, purchase requests, quotes, order handling |
 | `contracts.manage` | Proposing, signing, amending and ending contracts |
-| `billing.manage`   | Paying, top-ups, payout accounts, withdrawals |
+| `billing.manage`   | Paying, top-ups, removing payout accounts, withdrawals. Only the owner adds a payout account |
 
 - **`*.view` codes gate reading** an organization's private data, and a
   `*.manage` code implies the `*.view` of its area.

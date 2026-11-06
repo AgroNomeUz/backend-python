@@ -24,7 +24,7 @@ from django.db import DatabaseError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from core.test_support import auth
+from api.models import PhoneOtp
 from billing import gateway as gateways
 from billing import services
 from billing.models import (
@@ -39,6 +39,7 @@ from billing.models import (
 )
 from billing.reconciliation import _holds_match_entries, needs_a_person, reconcile
 from core.models import ActivityLog
+from core.test_support import auth
 from users.models import OrgPermission, Organization, Region, User
 
 PHONE = "+998901112233"
@@ -776,16 +777,18 @@ class PayoutTests(BillingTestCase):
             phone=phone,
         )
 
-    def test_a_member_confirms_with_the_owners_code(self):
-        response = self.add_destination(user=self.clerk(ATTACKER_PHONE))
-        self.assertEqual(response.status_code, 201, response.content)
-
     @override_settings(OTP_TEST_PHONES=[ATTACKER_PHONE])
     def test_a_members_own_phone_cannot_confirm_an_account(self):
         """A stolen admin session can create a member with any phone it likes."""
         response = self.add_destination(user=self.clerk(ATTACKER_PHONE))
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 403, response.content)
         self.assertFalse(PayoutDestination.objects.exists())
+
+    def test_a_member_cannot_send_a_code_to_anyone(self):
+        """A code is a login: one relayed from the owner would make its reader the owner."""
+        response = self.post("payout-destinations/code", user=self.clerk(ATTACKER_PHONE))
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(PhoneOtp.objects.exists())
 
     def test_adding_an_account_without_a_phone_is_refused(self):
         response = self.post("payout-destinations/code", user=self.seller_owner)

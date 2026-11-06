@@ -155,15 +155,18 @@ async def mock_complete_payment(request, payment_id: UUID, data: MockCompleteIn)
 
 # ── payout destinations ──────────────────────────────────────────────────────
 
-def _owner_phone(organization) -> str:
+def _owner_phone(request, organization) -> str:
     """
-    Where a payout code goes, whoever is asking. Staff can set a member's phone,
-    so a member's code proves nothing. Staff cannot move the owner's, and the
-    owner moves it only with proof of the old number.
+    The phone that confirms a payout account, which only the owner may add. Staff
+    can set a member's phone, so a member's code proves nothing, and a code relayed
+    from the owner would log its reader in as them. Staff cannot move the owner's
+    number, and the owner moves it only with proof of the old one.
     """
-    phone = organization.owner.phone
+    if organization.owner_id != request.auth.pk:
+        raise HttpError(403, "Only the organization owner can add a payout account")
+    phone = request.auth.phone
     if not phone:
-        raise HttpError(400, "The organization owner has no phone number to confirm this with")
+        raise HttpError(400, "Your account has no phone number to confirm this with")
     return phone
 
 
@@ -171,9 +174,9 @@ def _owner_phone(organization) -> str:
     "/payout-destinations/code", response={200: CodeSentOut, 429: OtpThrottledOut}
 )
 async def send_destination_code(request):
-    """Text a code to the owner. Adding a payout account has to present it."""
+    """Text a code to the owner, the only one who can add a payout account."""
     organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
-    phone = await sync_to_async(_owner_phone)(organization)
+    phone = _owner_phone(request, organization)
     try:
         issued = await sync_to_async(issue_otp)(phone, client_ip(request))
     except OtpThrottled as exc:
@@ -183,7 +186,7 @@ async def send_destination_code(request):
 
 def _apply_add_destination(request, organization, data: DestinationCreateIn):
     try:
-        verify_otp(_owner_phone(organization), data.code)
+        verify_otp(_owner_phone(request, organization), data.code)
     except OtpInvalid as exc:
         raise HttpError(400, str(exc))
     return services.add_destination(

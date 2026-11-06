@@ -49,7 +49,7 @@ _PERMISSION_INFO = {
     ),
     OrgPermission.MANAGE_BILLING: (
         "billing", "Billing",
-        "Pay for orders, top up the wallet, manage payout accounts and withdraw money.",
+        "Pay for orders, top up the wallet, remove payout accounts and withdraw money.",
     ),
     OrgPermission.VIEW_EQUIPMENT: (
         "equipment", "Equipment",
