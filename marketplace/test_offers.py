@@ -370,6 +370,19 @@ class OfferWriteTests(MarketTestCase):
         offer.refresh_from_db()
         self.assertEqual(offer.status, Offer.Status.ARCHIVED)
 
+    def test_an_archived_offer_cannot_be_republished(self):
+        offer = self.make_offer()
+        path = f"market/offers/{offer.public_id}"
+        self.call("delete", path, user=self.seller_owner)
+        for status in ("active", "draft", "paused"):
+            response = self.patch(path, {"status": status}, self.seller_owner)
+            self.assertEqual(response.status_code, 409, status)
+        offer.refresh_from_db()
+        self.assertEqual(offer.status, Offer.Status.ARCHIVED)
+        self.assertEqual(
+            self.patch(path, {"status": "archived"}, self.seller_owner).status_code, 200
+        )
+
     def test_another_organizations_offer_is_a_404(self):
         offer = self.make_offer()
         path = f"market/offers/{offer.public_id}"

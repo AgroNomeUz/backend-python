@@ -324,6 +324,11 @@ def _apply_update_offer(request, organization, offer_id, data: OfferUpdateIn) ->
             .filter(organization=organization),
             public_id=offer_id,
         )
+        if (
+            offer.status == Offer.Status.ARCHIVED
+            and fields.get("status", offer.status) != offer.status
+        ):
+            raise HttpError(409, "An archived offer's status cannot be changed.")
         before = offer_snapshot(offer)
         if "region_id" in fields:
             region_id = fields.pop("region_id")
