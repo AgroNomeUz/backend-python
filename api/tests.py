@@ -10,17 +10,23 @@ below, and a helper that depended on either channel would quietly stop the
 suite from noticing if the leak came back.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from itertools import count
+from threading import Barrier
+from time import sleep
 from unittest.mock import patch
 
+from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from api.auth import create_access_token, create_signup_token
 from core.test_support import auth
 from api.models import PhoneOtp, RefreshToken
+from api.otp import OtpThrottled, issue_otp
 from api.sms import mask_phone
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
@@ -699,6 +705,61 @@ class OldCodeTests(AuthTestCase):
         self.assertEqual(
             self.post("otp/verify", {"phone": PHONE, "code": older}).status_code, 400
         )
+
+
+class OtpBurstTests(TransactionTestCase):
+    """Real transactions and real threads: the locks are what is under test."""
+
+    BURST = 8
+
+    def burst(self, phones, ip=None):
+        """Issue for every phone at once; every issuer gets past the unlocked check."""
+        barrier = Barrier(len(phones))
+
+        def hash_together(code):
+            barrier.wait(timeout=10)
+            return make_password(code)
+
+        def issue(phone):
+            try:
+                issue_otp(phone, ip)
+            except OtpThrottled:
+                pass
+            finally:
+                connection.close()
+
+        real_create = PhoneOtp.objects.create
+
+        def create_slowly(**fields):
+            # Without a lock, every issuer is in this gap at once.
+            sleep(0.05)
+            return real_create(**fields)
+
+        with (
+            patch("api.otp.make_password", side_effect=hash_together),
+            patch.object(PhoneOtp.objects, "create", side_effect=create_slowly),
+            patch("api.otp.send_sms") as send,
+            ThreadPoolExecutor(max_workers=len(phones)) as pool,
+        ):
+            list(pool.map(issue, phones))
+        return send.call_count
+
+    def test_a_burst_for_one_number_sends_once(self):
+        self.assertEqual(self.burst([PHONE] * self.BURST), 1)
+        self.assertEqual(PhoneOtp.objects.count(), 1)
+
+    @override_settings(OTP_MAX_REQUESTS_PER_IP_PER_HOUR=1)
+    def test_a_burst_from_one_address_sends_once(self):
+        phones = [f"+99890555000{index}" for index in range(self.BURST)]
+        self.assertEqual(self.burst(phones, ip="203.0.113.7"), 1)
+
+
+class OtpThrottleCostTests(AuthTestCase):
+    def test_a_throttled_caller_costs_no_hash(self):
+        self.request_code()
+        with patch("api.otp.make_password") as hasher, self.assertRaises(OtpThrottled):
+            issue_otp(PHONE)
+        hasher.assert_not_called()
 
 
 class LoginLimitTests(AuthTestCase):

@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 
@@ -77,9 +77,9 @@ def _generate_code(phone: str) -> tuple[str, bool]:
     return get_random_string(settings.OTP_CODE_LENGTH, "0123456789"), False
 
 
-def issue_otp(phone: str, ip: str | None = None) -> IssuedOtp:
+def check_otp_limits(phone: str, ip: str | None = None) -> None:
     """
-    Send a fresh passcode to `phone`, or raise `OtpThrottled`.
+    Raise `OtpThrottled` if `phone` or `ip` may not be sent a code right now.
 
     The three limits are checked cheapest-first and the cooldown speaks last
     in seconds the client can count down from.
@@ -112,13 +112,41 @@ def issue_otp(phone: str, ip: str | None = None) -> IssuedOtp:
                 "Too many codes requested from this address. Try again later.",
             )
 
+
+def _lock_otp_limits(phone: str, ip: str | None) -> None:
+    """
+    Serialise issuers until commit, so the count they check stays true.
+
+    Always IP then phone: two issuers sharing both must not deadlock.
+    """
+    with connection.cursor() as cursor:
+        if ip:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [f"otp-ip:{ip}"])
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [f"otp-phone:{phone}"])
+
+
+def issue_otp(phone: str, ip: str | None = None) -> IssuedOtp:
+    """
+    Send a fresh passcode to `phone`, or raise `OtpThrottled`.
+
+    The limits run twice: once unlocked, so a throttled caller costs no
+    password hash, and again under the locks, because everyone who passed the
+    first check at the same moment would otherwise send.
+    """
+    check_otp_limits(phone, ip)
+
     code, is_dev_code = _generate_code(phone)
-    otp = PhoneOtp.objects.create(
-        phone=phone,
-        code_hash=make_password(code),
-        expires_at=now + timedelta(seconds=settings.OTP_TTL_SECONDS),
-        ip=ip,
-    )
+    code_hash = make_password(code)
+
+    with transaction.atomic():
+        _lock_otp_limits(phone, ip)
+        check_otp_limits(phone, ip)
+        otp = PhoneOtp.objects.create(
+            phone=phone,
+            code_hash=code_hash,
+            expires_at=timezone.now() + timedelta(seconds=settings.OTP_TTL_SECONDS),
+            ip=ip,
+        )
 
     if not is_dev_code:
         minutes = settings.OTP_TTL_SECONDS // 60
