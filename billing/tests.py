@@ -31,7 +31,7 @@ from billing.models import (
     PayoutDestination,
     WebhookEvent,
 )
-from billing.reconciliation import reconcile
+from billing.reconciliation import needs_a_person, reconcile
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
 
@@ -329,9 +329,61 @@ class ProviderEventTests(BillingTestCase):
         self.assertIn("ignored", response.json()["outcome"])
         self.assertEqual(services.wallet_balance(self.buyer), Decimal("1000.00"))
 
-    def test_an_event_for_an_unknown_payment_is_recorded_and_ignored(self):
-        outcome, _ = send_event(gateways.PAYMENT_SUCCEEDED, "nope", "5.00")
-        self.assertEqual(outcome, "unknown payment")
+    def test_an_event_that_beats_our_own_write_is_not_lost(self):
+        gateway = gateways.get_gateway("mock")
+        payment = self.pending()
+        reference = payment.provider_reference
+        Payment.objects.filter(pk=payment.pk).update(provider_reference="")
+        body = gateway.build_event(gateways.PAYMENT_SUCCEEDED, reference, payment.amount)
+
+        early = self.webhook(body, gateway.sign(body))
+        self.assertEqual(early.status_code, 503)
+        self.assertFalse(WebhookEvent.objects.exists())
+
+        Payment.objects.filter(pk=payment.pk).update(provider_reference=reference)
+        retried = self.webhook(body, gateway.sign(body))
+        self.assertEqual(retried.status_code, 200)
+        self.assertFalse(retried.json()["duplicate"])
+        self.assertEqual(services.wallet_balance(self.buyer), Decimal("1000.00"))
+
+    def test_a_refused_event_is_put_in_front_of_a_person(self):
+        payment = self.pending("1000.00")
+        self.assertEqual(needs_a_person(), [])
+        self.webhook(*self.signed(payment, amount="1.00"))
+        problems = needs_a_person()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("does not match", problems[0])
+
+    def test_a_chargeback_is_put_in_front_of_a_person(self):
+        payment = self.pending()
+        self.webhook(*self.signed(payment))
+        self.webhook(*self.signed(payment, gateways.PAYMENT_FAILED))
+        self.assertEqual(len(needs_a_person()), 1)
+
+    def test_a_refused_event_stops_nagging_eventually(self):
+        payment = self.pending("1000.00")
+        self.webhook(*self.signed(payment, amount="1.00"))
+        later = timezone.now() + timedelta(days=3)
+        self.assertEqual(needs_a_person(now=later), [])
+
+    def test_a_crashed_checkout_does_not_block_the_retry(self):
+        def start():
+            return services.start_payment(
+                organization=self.buyer,
+                amount=Decimal("100.00"),
+                purpose=Payment.Purpose.ORDER,
+                reference_type="test.thing",
+                reference_id=reference,
+            )
+
+        reference = uuid.uuid4()
+        with mock.patch.object(
+            gateways.MockGateway, "create_checkout", side_effect=TimeoutError("slow")
+        ):
+            with self.assertRaises(TimeoutError):
+                start()
+        self.assertEqual(Payment.objects.get().status, Payment.Status.FAILED)
+        self.assertTrue(start().checkout_url)
 
     def test_a_failed_effect_leaves_the_event_retryable(self):
         payment = self.pending()
@@ -549,6 +601,23 @@ class PayoutTests(BillingTestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(services.wallet_balance(self.buyer), Decimal("1000.00"))
         self.assertEqual(Payout.objects.get().status, Payout.Status.FAILED)
+
+    def test_a_timeout_does_not_return_money_that_may_have_left(self):
+        deposit(self.buyer, "1000.00")
+        destination = self.ready_destination()
+        self.client.raise_request_exception = False
+        with mock.patch.object(
+            gateways.MockGateway, "send_payout", side_effect=TimeoutError("slow")
+        ):
+            response = self.payout(destination)
+        self.assertEqual(response.status_code, 500)
+        payout = Payout.objects.get()
+        self.assertEqual(payout.status, Payout.Status.REQUESTED)
+        self.assertEqual(services.wallet_balance(self.buyer), Decimal("600.00"))
+
+        self.assertEqual(needs_a_person(), [])
+        later = timezone.now() + timedelta(hours=2)
+        self.assertIn("requested", needs_a_person(now=later)[0])
 
     def test_a_completed_payout_cannot_be_failed_afterwards(self):
         deposit(self.buyer, "1000.00")

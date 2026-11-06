@@ -5,6 +5,7 @@ Signing, schedules, changing terms, funding deliveries, and ending a contract.
 
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.db import IntegrityError, transaction
 from django.test import override_settings
@@ -484,19 +485,87 @@ class AmendingTests(MarketTestCase):
         self.assertEqual(after.unit_price, Decimal("9000.00"))
         self.assertEqual(after.contract_terms.version, 2)
 
-    def test_a_delivery_already_made_keeps_its_terms(self):
-        contract = self.active_contract()
-        order = contract.orders.first()
+    def change_from_tomorrow(self, contract, **overrides):
+        terms = {
+            "unit_price": "9000.00",
+            "start_date": str(self.today + timedelta(days=1)),
+            **overrides,
+        }
         self.post(
-            contract_path(contract, "amend"),
-            self.contract_terms(
-                unit_price="9000.00", start_date=str(self.today + timedelta(days=1))
-            ),
-            self.seller_owner,
+            contract_path(contract, "amend"), self.contract_terms(**terms), self.seller_owner
         )
-        self.post(contract_path(contract, "accept"))
-        order.refresh_from_db()
-        self.assertEqual(order.unit_price, Decimal("8000.00"))
+        return self.post(contract_path(contract, "accept"))
+
+    def delivery(self, contract, days):
+        return contract.orders.get(delivery_date=self.today + timedelta(days=days))
+
+    def test_unconfirmed_deliveries_take_the_new_terms(self):
+        contract = self.active_contract()
+        self.change_from_tomorrow(contract, quantity_per_delivery="100.000")
+        today_order = self.delivery(contract, 0)
+        self.assertEqual(today_order.unit_price, Decimal("8000.00"))
+        later = self.delivery(contract, 2)
+        self.assertEqual(later.unit_price, Decimal("9000.00"))
+        self.assertEqual(later.quantity, Decimal("100.000"))
+        self.assertEqual(later.subtotal, Decimal("900000.00"))
+        self.assertEqual(later.contract_terms.version, 2)
+        self.assertEqual(later.events.last().note, "Updated to version 2.")
+
+    def test_a_confirmed_delivery_keeps_the_price_both_sides_committed_to(self):
+        fund(self.buyer, "1600000.00")
+        contract = self.active_contract()
+        confirmed = self.delivery(contract, 2)
+        self.post(order_path(confirmed, "confirm"), user=self.seller_owner)
+        self.change_from_tomorrow(contract)
+        confirmed.refresh_from_db()
+        self.assertEqual(confirmed.status, Status.PAID)
+        self.assertEqual(confirmed.unit_price, Decimal("8000.00"))
+        self.assertEqual(confirmed.hold.amount, Decimal("1600000.00"))
+
+    def test_a_delivery_dropped_from_the_schedule_is_called_off(self):
+        contract = self.active_contract()
+        dropped = self.delivery(contract, 2)
+        kept = self.delivery(contract, 3)
+        self.change_from_tomorrow(contract, delivery_weekdays=[kept.delivery_date.weekday()])
+        dropped.refresh_from_db()
+        kept.refresh_from_db()
+        self.assertEqual(dropped.status, Status.CANCELLED)
+        self.assertEqual(dropped.cancelled_by, Side.PLATFORM)
+        self.assertEqual(kept.status, Status.PENDING_CONFIRMATION)
+
+    def test_a_shortened_contract_refunds_a_paid_delivery_past_its_end(self):
+        fund(self.buyer, "1600000.00")
+        contract = self.active_contract()
+        late = self.delivery(contract, 3)
+        self.post(order_path(late, "confirm"), user=self.seller_owner)
+        self.assertEqual(billing.wallet_balance(self.buyer), Decimal("0.00"))
+        self.change_from_tomorrow(contract, end_date=str(self.today + timedelta(days=1)))
+        late.refresh_from_db()
+        self.assertEqual(late.status, Status.CANCELLED)
+        self.assertEqual(billing.wallet_balance(self.buyer), Decimal("1600000.00"))
+
+    def test_goods_already_on_the_road_are_left_alone(self):
+        fund(self.buyer, "1600000.00")
+        contract = self.active_contract()
+        late = self.delivery(contract, 3)
+        self.post(order_path(late, "confirm"), user=self.seller_owner)
+        self.post(order_path(late, "dispatch"), user=self.seller_owner)
+        self.change_from_tomorrow(contract, end_date=str(self.today + timedelta(days=1)))
+        late.refresh_from_db()
+        self.assertEqual(late.status, Status.DISPATCHED)
+
+    def test_the_job_finishes_a_change_interrupted_by_a_crash(self):
+        contract = self.active_contract()
+        with mock.patch(
+            "marketplace.contract_services.sync_orders_with_terms", return_value=0
+        ):
+            self.change_from_tomorrow(contract)
+        stale = self.delivery(contract, 2)
+        self.assertEqual(stale.unit_price, Decimal("8000.00"))
+        self.assertEqual(jobs.run_all()["contract_orders_synced"], 3)
+        stale.refresh_from_db()
+        self.assertEqual(stale.unit_price, Decimal("9000.00"))
+        self.assertEqual(jobs.run_all()["contract_orders_synced"], 0)
 
     def test_rejecting_a_change_leaves_the_contract_as_it_was(self):
         contract = self.active_contract()

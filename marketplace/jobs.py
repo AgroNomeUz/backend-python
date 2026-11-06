@@ -8,16 +8,23 @@ it must not stop the sellers behind it from being paid.
 """
 
 import logging
+from datetime import timedelta
 
+from django.conf import settings
 from django.utils import timezone
 
-from .contract_services import close_ended_contracts, generate_all_orders
-from .models import Order
+from .contract_services import (
+    close_ended_contracts,
+    generate_all_orders,
+    sync_all_contracts,
+)
+from .models import Order, market_today
 from .order_services import (
     SYSTEM,
     accept_order,
     expire_unconfirmed,
     expire_unpaid,
+    refund_undispatched,
     retry_contract_funding,
 )
 
@@ -58,10 +65,22 @@ def run_all() -> dict[str, int]:
             Order.objects.filter(status=Status.AWAITING_PAYMENT, pay_by__lt=now),
             expire_unpaid,
         ),
+        "refunded_undispatched": _each(
+            Order.objects.filter(
+                status=Status.PAID,
+                delivery_date__lt=market_today()
+                - timedelta(days=settings.ORDER_DISPATCH_GRACE_DAYS),
+            ),
+            refund_undispatched,
+        ),
         "auto_accepted": _each(
-            Order.objects.filter(status=Status.DELIVERED, acceptance_deadline__lt=now),
+            Order.objects.filter(
+                status__in=[Status.DISPATCHED, Status.DELIVERED],
+                acceptance_deadline__lt=now,
+            ),
             lambda order: accept_order(SYSTEM, order),
         ),
+        "contract_orders_synced": sync_all_contracts(),
         "contract_orders": generate_all_orders(),
         "contracts_closed": close_ended_contracts(),
     }

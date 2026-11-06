@@ -56,6 +56,16 @@ class InsufficientFunds(BillingError):
     status = 409
 
 
+class EventNotReady(Exception):
+    """
+    The provider told us about something we cannot find yet.
+
+    Providers can answer faster than we can save their reference. Consuming the
+    event would lose the only news we will get, so it is left unprocessed and the
+    provider is told to send it again.
+    """
+
+
 def money(value) -> Decimal:
     return Decimal(value).quantize(CENTS, rounding=ROUND_HALF_UP)
 
@@ -328,12 +338,16 @@ def start_payment(
 
     try:
         checkout = gateway.create_checkout(payment)
-    except gateways.GatewayError as exc:
+    except Exception as exc:
+        # Any failure, not only a refusal: with no provider reference this row
+        # can never complete, and left pending it would block every retry.
         payment.status = Payment.Status.FAILED
         payment.failure_reason = str(exc)[:255]
         payment.completed_at = timezone.now()
         payment.save(update_fields=["status", "failure_reason", "completed_at"])
-        raise BillingError("The payment provider refused the request", status=502)
+        if isinstance(exc, gateways.GatewayError):
+            raise BillingError("The payment provider refused the request", status=502)
+        raise
 
     payment.provider_reference = checkout.provider_reference
     payment.checkout_url = checkout.checkout_url
@@ -373,7 +387,7 @@ def _complete_payment(event: gateways.GatewayEvent, provider: str) -> str:
         .first()
     )
     if payment is None:
-        return "unknown payment"
+        raise EventNotReady(f"No payment with reference {event.provider_reference}")
     if payment.status == Payment.Status.SUCCEEDED:
         # A success followed by "failed" is a chargeback. Nothing here can undo
         # money that may already be spent or paid out, so it waits for a person.
@@ -534,7 +548,7 @@ def _complete_payout(event: gateways.GatewayEvent, provider: str) -> str:
         .first()
     )
     if payout is None:
-        return "unknown payout"
+        raise EventNotReady(f"No payout with reference {event.provider_reference}")
     if payout.status != Payout.Status.PROCESSING:
         return f"ignored: payout is {payout.status}"
     if event.amount != payout.amount:

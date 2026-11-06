@@ -7,10 +7,12 @@ the side that did not propose it accepts it.** Neither party can change a price
 or a schedule alone, before or after signing.
 """
 
+import logging
 from datetime import date, timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from ninja.errors import HttpError
 
@@ -28,6 +30,7 @@ from .models import (
 from .order_services import (
     SYSTEM,
     Actor,
+    apply_contract_terms,
     audit,
     cancel_order,
     contract_order_values,
@@ -35,6 +38,7 @@ from .order_services import (
     record_generated_order,
 )
 
+logger = logging.getLogger(__name__)
 ContractStatus = SupplyContract.Status
 TermsStatus = ContractTerms.Status
 
@@ -194,36 +198,42 @@ def amend_contract(actor: Actor, contract: SupplyContract, terms: dict) -> Contr
     return version
 
 
-@transaction.atomic
 def accept_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
-    """Sign. The first accepted version is what makes a contract active."""
-    contract = _locked(contract)
-    terms = pending_terms(contract)
-    if terms is None:
-        raise HttpError(409, "Nothing is waiting to be accepted.")
-    if terms.proposed_by_side == actor.side:
-        raise HttpError(403, "The other side has to accept what you proposed.")
+    """
+    Sign. The first accepted version is what makes a contract active.
 
-    now = timezone.now()
-    terms.status = TermsStatus.ACCEPTED
-    terms.decided_by = actor.user
-    terms.decided_at = now
-    terms.save(update_fields=["status", "decided_by", "decided_at"])
+    Orders are brought into line after the commit, not inside it. See
+    `sync_orders_with_terms`.
+    """
+    with transaction.atomic():
+        contract = _locked(contract)
+        terms = pending_terms(contract)
+        if terms is None:
+            raise HttpError(409, "Nothing is waiting to be accepted.")
+        if terms.proposed_by_side == actor.side:
+            raise HttpError(403, "The other side has to accept what you proposed.")
 
-    before = contract.status
-    if contract.status == ContractStatus.PROPOSED:
-        contract.status = ContractStatus.ACTIVE
-        contract.activated_at = now
-        contract.save(update_fields=["status", "activated_at", "updated_at"])
-    audit(
-        actor,
-        contract,
-        ActivityLog.Action.STATUS_CHANGED,
-        {
-            "status": {"from": before, "to": contract.status},
-            "accepted_version": {"from": None, "to": terms.version},
-        },
-    )
+        now = timezone.now()
+        terms.status = TermsStatus.ACCEPTED
+        terms.decided_by = actor.user
+        terms.decided_at = now
+        terms.save(update_fields=["status", "decided_by", "decided_at"])
+
+        before = contract.status
+        if contract.status == ContractStatus.PROPOSED:
+            contract.status = ContractStatus.ACTIVE
+            contract.activated_at = now
+            contract.save(update_fields=["status", "activated_at", "updated_at"])
+        audit(
+            actor,
+            contract,
+            ActivityLog.Action.STATUS_CHANGED,
+            {
+                "status": {"from": before, "to": contract.status},
+                "accepted_version": {"from": None, "to": terms.version},
+            },
+        )
+    sync_orders_with_terms(contract)
     generate_orders(contract)
     return contract
 
@@ -295,13 +305,8 @@ def terminate_contract(
             ActivityLog.Action.STATUS_CHANGED,
             {"termination_date": {"from": None, "to": str(contract.termination_date)}},
         )
-        # As the platform, not the side giving notice: ending a contract on the
-        # agreed terms is nobody's failure to deliver.
-        for order in contract.orders.filter(
-            delivery_date__gt=contract.termination_date, status__in=UNDISPATCHED
-        ):
-            cancel_order(SYSTEM, order, "The contract was terminated.")
         _close_if_ended(contract)
+    sync_orders_with_terms(contract)
     return contract
 
 
@@ -343,20 +348,85 @@ def terms_for(versions: list[ContractTerms], day: date) -> ContractTerms | None:
     return next((terms for terms in versions if terms.start_date <= day), None)
 
 
+def terms_on(
+    contract: SupplyContract, versions: list[ContractTerms], day: date
+) -> ContractTerms | None:
+    """The terms of the delivery due on `day`, or None if nothing is due."""
+    if contract.termination_date is not None and day > contract.termination_date:
+        return None
+    terms = terms_for(versions, day)
+    if terms is None or day > terms.end_date:
+        return None
+    if not is_delivery_day(
+        terms.delivery_weekdays, terms.every_n_weeks, terms.start_date, day
+    ):
+        return None
+    return terms
+
+
 def planned_dates(contract: SupplyContract, *, today: date, horizon_days: int):
     """Every (date, terms) of this contract inside the window, in order."""
     versions = list(contract.versions.filter(status=TermsStatus.ACCEPTED))
     for offset in range(horizon_days + 1):
         day = today + timedelta(days=offset)
-        if contract.termination_date is not None and day > contract.termination_date:
-            return
-        terms = terms_for(versions, day)
-        if terms is None or day > terms.end_date:
-            continue
-        if is_delivery_day(
-            terms.delivery_weekdays, terms.every_n_weeks, terms.start_date, day
-        ):
+        terms = terms_on(contract, versions, day)
+        if terms is not None:
             yield day, terms
+
+
+def sync_orders_with_terms(contract: SupplyContract) -> int:
+    """
+    Bring deliveries already generated into line with what is agreed now.
+
+    Without this a change would miss every order inside the generation horizon:
+    the old price would still be charged, and a delivery dropped from the
+    schedule could still be confirmed and charged to the buyer.
+
+      * A delivery no longer on the schedule is called off, and refunded if it
+        was paid. As the platform rather than either side: both agreed to this,
+        so it is nobody's failure to deliver.
+      * One the seller has not confirmed takes the current terms.
+      * One already confirmed keeps its price. Both sides committed to it.
+
+    Idempotent, because it only compares orders with the current terms. It runs
+    after the contract's transaction commits, and `sync_all_contracts` repeats it
+    from the job runner, so a crash in between corrects itself. Keeping it
+    outside that transaction also means no order is ever locked while the
+    contract is, which is the opposite order to settlement and would deadlock.
+    """
+    versions = list(contract.versions.filter(status=TermsStatus.ACCEPTED))
+    changed = 0
+    upcoming = contract.orders.filter(
+        status__in=UNDISPATCHED, delivery_date__gte=market_today()
+    )
+    for order in upcoming:
+        terms = terms_on(contract, versions, order.delivery_date)
+        try:
+            if terms is None:
+                cancel_order(SYSTEM, order, "No longer on the contract's schedule.")
+                changed += 1
+            elif order.contract_terms_id != terms.pk:
+                changed += apply_contract_terms(order, terms)
+        except HttpError:
+            # The seller dispatched it a moment ago, so it stands.
+            continue
+    return changed
+
+
+def sync_all_contracts() -> int:
+    changed = 0
+    open_order = Q(
+        orders__status__in=UNDISPATCHED, orders__delivery_date__gte=market_today()
+    )
+    contracts = SupplyContract.objects.filter(
+        open_order, status__in=[ContractStatus.ACTIVE, ContractStatus.TERMINATED]
+    ).distinct()
+    for contract in contracts:
+        try:
+            changed += sync_orders_with_terms(contract)
+        except Exception:
+            logger.exception("Could not sync contract %s", contract.pk)
+    return changed
 
 
 def generate_orders(contract: SupplyContract, horizon_days: int | None = None) -> int:
@@ -394,7 +464,10 @@ def generate_all_orders() -> int:
         "provider_organization", "customer_organization", "product"
     )
     for contract in active:
-        total += generate_orders(contract)
+        try:
+            total += generate_orders(contract)
+        except Exception:
+            logger.exception("Could not generate orders for contract %s", contract.pk)
     return total
 
 

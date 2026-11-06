@@ -44,15 +44,23 @@ api/            HTTP layer: django-ninja routers, JWT auth, Pydantic schemas
 equipment/      Equipment domain: catalog (manufacturers, models, compatibility),
                 assets, pricing & availability, bookings, work orders & sessions,
                 maintenance & inspections, documents, asset events
+farms/          Farm clusters, farms, fields, boundaries, seasons, crop zones
+listings/       The machinery marketplace: offers to rent or sell a machine
+inquiries/      Contact between a renter and the owner of a machine
+deals/          Completed transactions and the reviews left on them
+favorites/      Saved listings
+marketplace/    The produce market: catalogue, offers, purchase requests and
+                quotes, orders, disputes, long-term supply contracts
+billing/        One money ledger for all contexts: wallets, escrow, payments,
+                payouts. The payment provider is mocked for now
 ```
+
+The produce market and the money behind it are designed in
+[`docs/produce-marketplace.md`](docs/produce-marketplace.md).
 
 ### Planned apps (bounded contexts)
 
 ```
-farms/          Farm, Field, CropSeason — extracted from equipment/ so that
-                marketplace and agronomy features can share them
-marketplace/    Goods listing & orders (seeds, fertilizer, produce, parts)
-billing/        Invoices, payments, deposits — one money ledger for all contexts
 notifications/  SMS / push / email fan-out (backed by a task queue)
 telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
                 First candidate for extraction into a real service: write-heavy,
@@ -91,12 +99,14 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 - [x] Staff management — add employees to an organization, per-member permissions
 - [ ] Rental requests & booking flow
 - [ ] Work orders: operator services billed per hectare / shift / operation
-- [ ] Farm management app (`farms/`: extract Farm, Field, CropSeason)
-- [ ] Marketplace for agro goods (`marketplace/`)
-- [ ] Payments & invoicing (`billing/`)
+- [x] Farm management app (`farms/`)
+- [x] Reviews & ratings
+- [x] Produce marketplace: offers, purchase requests, orders, contracts (`marketplace/`)
+- [x] Ledger, escrow, wallets and payouts (`billing/`), on a mocked provider
+- [ ] Real payment provider (Payme / Click / Uzum / a bank)
+- [ ] Invoicing and tax documents
 - [ ] Notifications (SMS / push)
 - [ ] Telemetry ingestion (GPS, ISOBUS) — post-MVP
-- [ ] Reviews & ratings
 
 ---
 
@@ -133,10 +143,24 @@ python manage.py createsuperuser
 python manage.py seed_regions
 python manage.py seed_demo          # 181 accounts, 634 listings; re-runnable
 python manage.py seed_demo --reset  # remove them again
+python manage.py seed_products      # the produce catalogue; safe to re-run
 ```
 
 Every demo account logs in with its phone number and the password `mockuser`.
 See [`equipment/demo_data/README.md`](equipment/demo_data/README.md).
+
+### Scheduled jobs
+
+Nothing runs these for you yet, so add them to cron before relying on them:
+
+```bash
+python manage.py run_market_jobs    # every few minutes: order deadlines, auto-accept, contract deliveries
+python manage.py reconcile_ledger   # daily: exits non-zero if the books disagree
+```
+
+Without `run_market_jobs`, a delivered order is never accepted automatically
+and a seller waits for the buyer indefinitely. Both commands are safe to run
+as often as you like.
 
 ---
 
@@ -278,6 +302,56 @@ step with it.
 not fields of the input schema. Verification is a statement the platform makes
 about an organization, not one it makes about itself.
 
+### Produce market
+
+Read [`docs/produce-marketplace.md`](docs/produce-marketplace.md) first for how
+an order and a contract work.
+
+| Endpoint | Method | Permission | Description |
+| --- | --- | --- | --- |
+| `/api/v1/market/categories`, `/market/products` | GET | Public | The shared catalogue, admin-curated |
+| `/api/v1/market/organizations/{id}/reliability` | GET | Public | Fill rate, on-time rate and dispute rate |
+| `/api/v1/market/offers` | GET | Public | The feed (`?search=`, `?category=`, `?product=`, `?region=`, `?grade=`, `?unit=`, `?available_on=`, price, `?sort=`) |
+| `/api/v1/market/offers/my` | GET | `market.view` | The organization's offers in every status |
+| `/api/v1/market/offers` | POST | `market.manage` | Publish; regulated goods need a verified organization |
+| `/api/v1/market/offers/{id}` | GET, PATCH, DELETE | Public read, `market.manage` | One offer; PATCH also pauses and publishes |
+| `/api/v1/market/offers/{id}/images` | POST, DELETE | `market.manage` | Photos |
+| `/api/v1/market/requests` | GET, POST | `market.view`, `market.manage` | What buyers need; several farms can cover one request |
+| `/api/v1/market/requests/{id}/quotes` | GET, POST | `market.view`, `market.manage` | The buyer sees all, a seller only their own |
+| `/api/v1/market/quotes/{id}/accept` | POST | `market.manage` | Turns a one-time quote into an order |
+| `/api/v1/market/orders` | GET, POST | `market.view`, `market.manage` | `?role=provider\|customer`, `?status=`, `?contract_id=` |
+| `/api/v1/market/orders/{id}/confirm`, `decline`, `dispatch`, `deliver`, `dispute/concede` | POST | `market.manage` | The seller's steps |
+| `/api/v1/market/orders/{id}/pay` | POST | `billing.manage` | `{"method": "wallet"\|"gateway"}` |
+| `/api/v1/market/orders/{id}/accept`, `reject` | POST | `market.manage` | The buyer's steps; `reject` can be partial |
+| `/api/v1/market/orders/{id}/cancel` | POST | `market.manage` | Either side, before dispatch |
+| `/api/v1/market/disputes`, `/{order_id}/resolve` | GET, POST | Platform staff | The arbitration queue |
+| `/api/v1/market/contracts` | GET, POST | `contracts.view`, `contracts.manage` | The buyer proposes from an offer or a quote |
+| `/api/v1/market/contracts/{id}/accept`, `reject`, `amend`, `terminate` | POST | `contracts.manage` | Only the side that did not propose can accept |
+| `/api/v1/market/contracts/{id}/orders` | GET | `contracts.view` | Its deliveries |
+
+### Billing
+
+| Endpoint | Method | Permission | Description |
+| --- | --- | --- | --- |
+| `/api/v1/billing/wallet`, `/wallet/entries` | GET | `billing.view` | Balance, money held in open orders, and the statement |
+| `/api/v1/billing/top-ups` | POST | `billing.manage` | Add money; the buyer finishes at `checkout_url` |
+| `/api/v1/billing/payments` | GET | `billing.view` | Money that came in |
+| `/api/v1/billing/payout-destinations` | GET, POST, DELETE | `billing.view`, `billing.manage` | Accounts to withdraw to. Adding one needs a code from `POST /payout-destinations/code` and then waits out a cooling-off period |
+| `/api/v1/billing/payouts` | GET, POST | `billing.view`, `billing.manage` | Withdrawals |
+| `/api/v1/billing/webhooks/{provider}` | POST | Signed | Provider events |
+| `/api/v1/billing/payments/{id}/mock-complete`, `/payouts/{id}/mock-complete` | POST | `billing.manage` | **Development only.** Stand in for the provider, and 404 in production |
+
+There is no real payment provider yet. `billing/gateway.py` is the seam, as
+`api/sms.py` is for SMS. `MockGateway` is refused when `ENVIRONMENT=production`,
+because it can declare that money arrived: payment endpoints answer 503 there
+until a real provider is added.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `BILLING_COMMISSION_RATE` | `0.015` | Charged to the seller on one-time orders. **Placeholder** |
+| `BILLING_CONTRACT_COMMISSION_RATE` | `0.01` | The same for contract deliveries. **Placeholder** |
+| `BILLING_PAYOUT_COOLDOWN_HOURS` | `24` | How long a new payout account waits |
+
 ### Audit trail
 
 Every write to org-owned data appends a `core.ActivityLog` row — actor, action,
@@ -315,6 +389,9 @@ from Django's own `auth.Permission` machinery, which stays for the admin site.
 |--------------------|----------------------------------------------|
 | `equipment.manage` | POST/PATCH/DELETE on `/api/v1/assets`        |
 | `users.manage`     | Every write under `/api/v1/members`          |
+| `market.manage`    | Offers, purchase requests, quotes, order handling |
+| `contracts.manage` | Proposing, signing, amending and ending contracts |
+| `billing.manage`   | Paying, top-ups, payout accounts, withdrawals |
 
 - **Reads are open** to any member of the organization; a permission only ever
   gates a write.

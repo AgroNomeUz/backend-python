@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, connection, transaction
 from django.test import TransactionTestCase, override_settings
@@ -21,7 +22,7 @@ from billing.models import EscrowHold, LedgerAccount, Payment
 from billing.reconciliation import reconcile
 from core.models import ActivityLog
 from deals.models import Deal
-from marketplace import jobs
+from marketplace import contract_services, jobs
 from marketplace import order_services as services
 from marketplace.models import (
     Offer,
@@ -710,6 +711,70 @@ class DeadlineTests(MarketTestCase):
         self.assertEqual(good.status, Status.SETTLED)
 
 
+class NoMoneyLeftStrandedTests(MarketTestCase):
+    """Whatever both sides fail to do, every order still reaches an end."""
+
+    def run_jobs_after(self, order, **fields):
+        Order.objects.filter(pk=order.pk).update(**fields)
+        counts = jobs.run_all()
+        order.refresh_from_db()
+        return counts
+
+    def test_goods_nobody_marks_delivered_are_settled_after_the_delivery_day(self):
+        order = self.order_at("dispatched")
+        self.assertIsNotNone(order.acceptance_deadline)
+        counts = self.run_jobs_after(
+            order, acceptance_deadline=timezone.now() - timedelta(minutes=1)
+        )
+        self.assertEqual(counts["auto_accepted"], 1)
+        self.assertEqual(order.status, Status.SETTLED)
+
+    def test_dispatched_goods_wait_until_the_delivery_day_is_over(self):
+        order = self.order_at(
+            "dispatched", delivery_date=str(self.today + timedelta(days=3))
+        )
+        self.assertEqual(jobs.run_all()["auto_accepted"], 0)
+        day_after = order.acceptance_deadline.astimezone(ZoneInfo("Asia/Tashkent")).date()
+        self.assertEqual(day_after, self.today + timedelta(days=4))
+
+    def test_marking_delivered_restarts_the_window_from_then(self):
+        order = self.order_at(
+            "dispatched", delivery_date=str(self.today + timedelta(days=3))
+        )
+        before = order.acceptance_deadline
+        self.step(order, "deliver")
+        order.refresh_from_db()
+        self.assertLess(order.acceptance_deadline, before)
+
+    def test_goods_never_sent_are_refunded_against_the_seller(self):
+        offer = self.make_offer(available_from=self.today - timedelta(days=5))
+        order = self.order_at("paid", offer=offer)
+        counts = self.run_jobs_after(order, delivery_date=self.today - timedelta(days=2))
+        self.assertEqual(counts["refunded_undispatched"], 1)
+        self.assertEqual(order.status, Status.CANCELLED)
+        self.assertEqual(order.cancelled_by, Side.PROVIDER)
+        self.assertEqual(billing.wallet_balance(self.buyer), Decimal("800000.00"))
+        offer.refresh_from_db()
+        self.assertEqual(offer.quantity_available, Decimal("500.000"))
+
+    def test_a_seller_has_until_the_day_after_delivery_to_send(self):
+        order = self.order_at("paid")
+        counts = self.run_jobs_after(order, delivery_date=self.today - timedelta(days=1))
+        self.assertEqual(counts["refunded_undispatched"], 0)
+        self.assertEqual(order.status, Status.PAID)
+
+
+class SellerProfileTests(MarketTestCase):
+    def test_a_produce_deal_shows_on_the_profile_with_no_listing(self):
+        order = self.order_at("delivered")
+        self.post(path(order, "accept"))
+        rows = self.get(f"organizations/{self.seller.public_id}/deals", user=False).json()
+        self.assertEqual(rows["count"], 1)
+        self.assertIsNone(rows["items"][0]["listing"])
+        profile = self.get(f"organizations/{self.seller.public_id}", user=False).json()
+        self.assertEqual(profile["stats"]["completed_deals"], 1)
+
+
 class ContactDetailsTests(MarketTestCase):
     def contacts(self, user):
         return self.get(f"organizations/{self.seller.public_id}/contacts", user)
@@ -915,6 +980,53 @@ class ConcurrencyTests(TransactionTestCase):
             ),
         )
         self.assertEqual(len([r for r in results if isinstance(r, Order)]), 1)
+        self.assertEqual(reconcile(), [])
+
+    def signed_contract(self):
+        contract = contract_services.propose_contract(
+            self.actor,
+            offer=self.offer,
+            terms={
+                "unit_price": Decimal("100.00"),
+                "quantity_per_delivery": Decimal("10.000"),
+                "delivery_weekdays": [0, 1, 2, 3, 4, 5, 6],
+                "start_date": self.today,
+                "end_date": self.today + timedelta(days=30),
+                "delivery_method": "pickup",
+                "notice_days": 0,
+            },
+        )
+        return contract_services.accept_terms(self.seller_actor, contract)
+
+    def dispatched_deliveries(self, contract, count=2):
+        fund(self.buyer, "10000.00")
+        orders = list(contract.orders.order_by("delivery_date")[:count])
+        for order in orders:
+            services.confirm_order(self.seller_actor, order)
+            services.dispatch_order(self.seller_actor, order)
+        return orders
+
+    def test_two_deliveries_settling_together_make_one_deal(self):
+        first, second = self.dispatched_deliveries(self.signed_contract())
+        results = self.attempt(
+            lambda: services.accept_order(self.actor, first),
+            lambda: services.accept_order(self.actor, second),
+        )
+        self.assertEqual(len([r for r in results if isinstance(r, Order)]), 2)
+        self.assertEqual(Deal.objects.count(), 1)
+        self.assertEqual(reconcile(), [])
+
+    def test_settling_and_terminating_cannot_deadlock(self):
+        contract = self.signed_contract()
+        first, second = self.dispatched_deliveries(contract)
+        results = self.attempt(
+            lambda: services.accept_order(self.actor, first),
+            lambda: contract_services.terminate_contract(self.actor, contract, "Closing"),
+            lambda: services.accept_order(self.actor, second),
+        )
+        self.assertEqual(
+            [r for r in results if isinstance(r, Exception)], []
+        )
         self.assertEqual(reconcile(), [])
 
     def test_paying_and_cancelling_cannot_both_land(self):

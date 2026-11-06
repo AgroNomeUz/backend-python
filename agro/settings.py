@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 
 from corsheaders.defaults import default_headers as cors_default_headers
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -286,6 +287,11 @@ BILLING_COMMISSION_RATE = Decimal(os.environ.get("BILLING_COMMISSION_RATE", "0.0
 BILLING_CONTRACT_COMMISSION_RATE = Decimal(
     os.environ.get("BILLING_CONTRACT_COMMISSION_RATE", "0.01")
 )
+# A rate is a fraction. Typing 1.5 for 1.5% would take more than the whole sale
+# from the seller, so a bad value stops the process rather than reaching money.
+for _rate in (BILLING_COMMISSION_RATE, BILLING_CONTRACT_COMMISSION_RATE):
+    if not Decimal(0) <= _rate < Decimal(1):
+        raise ImproperlyConfigured("Commission rates must be fractions, e.g. 0.015 for 1.5%")
 # How long a new payout destination waits before it can receive money.
 BILLING_PAYOUT_COOLDOWN_HOURS = int(os.environ.get("BILLING_PAYOUT_COOLDOWN_HOURS", "24"))
 
@@ -297,6 +303,8 @@ ORDER_CONFIRM_HOURS = 6
 ORDER_PAYMENT_HOURS = 6
 # How long a buyer has to inspect a delivery before it is accepted for them.
 ORDER_ACCEPTANCE_HOURS = 6
+# How many days after the delivery date a paid, unsent order is refunded.
+ORDER_DISPATCH_GRACE_DAYS = 1
 # How far ahead contract deliveries are turned into orders.
 CONTRACT_GENERATION_HORIZON_DAYS = 3
 

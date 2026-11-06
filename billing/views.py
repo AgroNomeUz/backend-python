@@ -345,9 +345,11 @@ async def receive_webhook(request: HttpRequest, provider: str):
     """
     Events from a payment provider.
 
-    An event we understand but cannot apply still answers 200, because a retry
-    would not change the answer. The reason is kept on `WebhookEvent`, and
-    `reconcile_ledger` surfaces anything that left the books inconsistent.
+    An event we can read but refuse to apply, such as a wrong amount, answers 200
+    because a retry would not change the answer. Its reason is kept on
+    `WebhookEvent` and `reconcile_ledger` puts it in front of a person. One that
+    refers to something we cannot find *yet* answers 503, so the provider sends
+    it again.
     """
     try:
         return await sync_to_async(_apply_webhook)(provider, request.body, request.META)
@@ -355,3 +357,5 @@ async def receive_webhook(request: HttpRequest, provider: str):
         raise Http404()
     except gateways.WebhookRejected as exc:
         raise HttpError(400, str(exc))
+    except services.EventNotReady:
+        raise HttpError(503, "Not ready for this event yet. Send it again.")

@@ -33,7 +33,13 @@ class GatewayUnavailable(Exception):
 
 
 class GatewayError(Exception):
-    """The provider refused the request."""
+    """
+    The provider definitely refused the request, so nothing happened.
+
+    A real gateway must raise this only when it is sure. A timeout is not a
+    refusal: the money may have moved, and treating it as one would return a
+    payout to the wallet and pay it twice. Let those propagate instead.
+    """
 
 
 class WebhookRejected(Exception):

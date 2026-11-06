@@ -39,6 +39,7 @@ from .models import (
     PurchaseRequest,
     Quote,
     Side,
+    SupplyContract,
     market_today,
 )
 
@@ -521,10 +522,32 @@ def order_payment_received(payment: Payment) -> None:
 
 # ── delivery ─────────────────────────────────────────────────────────────────
 
+def _deadline_after_dispatch(delivery_date) -> datetime:
+    """
+    The end of the delivery day, plus the usual window.
+
+    Dispatched goods need a clock too. A seller who forgets to press "delivered"
+    and a buyer who says nothing would otherwise leave the money in escrow for
+    good, with neither side able to cancel. This gives a seller nothing they
+    could not already get by pressing "delivered" early.
+    """
+    zone = ZoneInfo(settings.MARKET_TIME_ZONE)
+    end_of_day = datetime.combine(delivery_date + timedelta(days=1), time.min, tzinfo=zone)
+    return max(end_of_day, timezone.now()) + timedelta(
+        hours=settings.ORDER_ACCEPTANCE_HOURS
+    )
+
+
 @transaction.atomic
 def dispatch_order(actor: Actor, order: Order) -> Order:
     order = _locked(order)
-    _move(order, Status.DISPATCHED, actor, dispatched_at=timezone.now())
+    _move(
+        order,
+        Status.DISPATCHED,
+        actor,
+        dispatched_at=timezone.now(),
+        acceptance_deadline=_deadline_after_dispatch(order.delivery_date),
+    )
     return order
 
 
@@ -550,7 +573,9 @@ def _record_deal(order: Order) -> None:
     if order.hold.released_amount <= 0:
         return
     if order.contract_id:
-        contract = order.contract
+        # Locked and read fresh: two deliveries settling at once must make one
+        # deal. Always order first, then contract, so this cannot deadlock.
+        contract = SupplyContract.objects.select_for_update().get(pk=order.contract_id)
         if contract.deal_id is None:
             contract.deal = record_completed_sale(
                 provider=order.provider_organization,
@@ -723,6 +748,56 @@ def expire_unpaid(order: Order) -> None:
             reason="The buyer did not pay in time.",
             cancelled_by=Side.CUSTOMER,
         )
+
+
+@transaction.atomic
+def refund_undispatched(order: Order) -> None:
+    """Paid for and never sent: the buyer's money must not wait on them noticing."""
+    order = _locked(order)
+    if order.status == Status.PAID:
+        _close_without_delivery(
+            order,
+            Status.CANCELLED,
+            SYSTEM,
+            reason="The seller did not dispatch in time.",
+            cancelled_by=Side.PROVIDER,
+        )
+
+
+@transaction.atomic
+def apply_contract_terms(order: Order, terms) -> bool:
+    """Move an unconfirmed delivery onto newer terms. Returns whether it changed."""
+    order = _locked(order)
+    if order.status != Status.PENDING_CONFIRMATION or order.contract_terms_id == terms.pk:
+        return False
+    old_price = order.unit_price
+    order.contract_terms = terms
+    order.unit_price = terms.unit_price
+    order.ordered_quantity = terms.quantity_per_delivery
+    order.quantity = terms.quantity_per_delivery
+    order.subtotal = line_total(terms.quantity_per_delivery, terms.unit_price)
+    order.delivery_method = terms.delivery_method
+    order.delivery_address = terms.delivery_address
+    order.save(
+        update_fields=[
+            "contract_terms",
+            "unit_price",
+            "ordered_quantity",
+            "quantity",
+            "subtotal",
+            "delivery_method",
+            "delivery_address",
+            "updated_at",
+        ]
+    )
+    _record(order, order.status, order.status, SYSTEM, f"Updated to version {terms.version}.")
+    audit(
+        SYSTEM,
+        order,
+        ActivityLog.Action.UPDATED,
+        {"unit_price": {"from": str(old_price), "to": str(terms.unit_price)}},
+    )
+    return True
 
 
 def confirm_deadline(delivery_date) -> datetime:

@@ -49,12 +49,20 @@ payout failed           payouts_in_transit -> wallet(seller)
 ```
 
 `python manage.py reconcile_ledger` re-derives everything from the entries and
-reports any disagreement. Run it daily.
+reports any disagreement. It also lists what only a person can settle: payouts
+stuck in `requested` or `processing`, and provider events we refused. Run it
+daily, and alert on a non-zero exit.
 
 Payment events are idempotent: `WebhookEvent` is unique per provider and event
-id, and a replay is a no-op. A payment that fails and later succeeds is
-credited; one that succeeded and later "fails" is **not** reversed
-automatically — that is a chargeback, and a person has to look at it.
+id, and a replay is a no-op. An event about something we cannot find yet answers
+503 and leaves no row, so the provider's retry is processed for real. A payment
+that fails and later succeeds is credited; one that succeeded and later "fails"
+is **not** reversed automatically — that is a chargeback.
+
+A payout whose provider call times out stays `requested` with the money in
+transit. It may or may not have been sent, so retrying could pay it twice and
+returning it could give away money that already left. A real gateway may only
+raise `GatewayError` when it is certain nothing happened.
 
 ## An order's life
 
@@ -76,10 +84,20 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 - **The seller confirms before the buyer pays**, so a decline needs no refund.
 - **Partial acceptance** releases the accepted share at once and holds the rest
   in dispute. The seller can concede (refund), or platform staff split it.
-- **Deadlines** keep money moving: unconfirmed and unpaid orders expire, and a
-  delivered order is accepted automatically once `ORDER_ACCEPTANCE_HOURS` pass,
-  so a buyer cannot sit on a seller's money. `python manage.py run_market_jobs`
-  applies them; run it from cron every few minutes.
+- **Deadlines** mean every order reaches an end even if both sides go quiet, so
+  money can never be left in escrow with nobody able to move it.
+  `python manage.py run_market_jobs` applies them; run it from cron every few
+  minutes.
+
+| If nobody acts on | What happens | Counted against |
+| --- | --- | --- |
+| `pending_confirmation`, past `confirm_by` | Expires, stock returns | Seller |
+| `awaiting_payment`, past `pay_by` | Expires, stock returns | Buyer |
+| `paid`, over `ORDER_DISPATCH_GRACE_DAYS` after the delivery date | Refunded | Seller |
+| `dispatched`, once the delivery day and the window are over | Accepted, seller paid | Nobody |
+| `delivered`, `ORDER_ACCEPTANCE_HOURS` after delivery | Accepted, seller paid | Nobody |
+
+A `disputed` order is the one state that waits for a person, in the staff queue.
 
 ## Contracts
 
@@ -87,6 +105,11 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 of what was agreed. Either side proposes, and **only the other side can accept**.
 After signing, a change is a new version that also needs the other side, and
 it applies only to deliveries on or after its `start_date`.
+
+Deliveries already generated are brought into line when a change is accepted.
+One the seller has not confirmed takes the new terms. One already confirmed
+keeps its price, since both sides committed to it. One that is no longer on the
+schedule is called off and refunded, unless it has already been dispatched.
 
 The schedule is weekdays plus `every_n_weeks`, which covers daily, weekly,
 twice-weekly and fortnightly. `run_market_jobs` generates one order per delivery
