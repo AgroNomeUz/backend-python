@@ -486,6 +486,41 @@ class FundingTests(MarketTestCase):
         self.assertIsNotNone(contract.deal)
         self.assertEqual(contract.orders.filter(deal__isnull=False).count(), 0)
 
+    def settle(self, order):
+        self.confirm(order)
+        self.post(order_path(order, "dispatch"), user=self.seller_owner)
+        self.post(order_path(order, "accept"))
+
+    def test_the_review_window_runs_from_the_latest_delivery(self):
+        fund(self.buyer, "3200000.00")
+        contract = self.active_contract()
+        first, second = contract.orders.order_by("delivery_date")[:2]
+        self.settle(first)
+        Deal.objects.update(completed_at=timezone.now() - timedelta(days=40))
+
+        self.settle(second)
+
+        contract.refresh_from_db()
+        review = self.post(f"deals/{contract.deal.public_id}/review", {"rating": 5})
+        self.assertEqual(review.status_code, 201, review.content)
+
+    def test_a_delivery_that_paid_nothing_leaves_the_window_alone(self):
+        fund(self.buyer, "3200000.00")
+        contract = self.active_contract()
+        first, second = contract.orders.order_by("delivery_date")[:2]
+        self.settle(first)
+        long_ago = timezone.now() - timedelta(days=40)
+        Deal.objects.update(completed_at=long_ago)
+
+        self.confirm(second)
+        self.post(order_path(second, "dispatch"), user=self.seller_owner)
+        self.post(order_path(second, "reject"), {"accepted_quantity": "0", "reason": "quality"})
+        self.post(order_path(second, "dispute/concede"), user=self.seller_owner)
+
+        second.refresh_from_db()
+        self.assertEqual(second.status, Status.SETTLED)
+        self.assertEqual(Deal.objects.get().completed_at, long_ago)
+
     def test_the_seller_can_adjust_within_the_tolerance(self):
         fund(self.buyer, "2000000.00")
         order = self.first_delivery(tolerance_percent="10")

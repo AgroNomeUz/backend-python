@@ -33,7 +33,7 @@ from billing import services as billing
 from billing.models import MONEY_DECIMAL_PLACES, MONEY_MAX_DIGITS, Payment
 from core.audit import request_context
 from core.models import ActivityLog
-from deals.services import record_completed_sale
+from deals.services import record_completed_sale, renew_completed_sale
 from users.models import Organization, User
 
 from .models import (
@@ -643,6 +643,8 @@ def _record_deal(order: Order) -> None:
                 customer=order.customer_organization,
             )
             contract.save(update_fields=["deal", "updated_at"])
+        else:
+            renew_completed_sale(contract.deal_id)
     else:
         order.deal = record_completed_sale(
             provider=order.provider_organization,

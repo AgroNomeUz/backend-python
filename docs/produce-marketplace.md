@@ -140,6 +140,10 @@ order waits in `awaiting_payment`, like any other order. Contract deliveries
 draw on the contract, not on an offer's stock. The seller may confirm a
 different quantity within the agreed `tolerance_percent`.
 
+A contract has one `Deal`, created by its first delivery that pays the seller.
+Each later one moves `completed_at`, so the 30-day review window runs from the
+latest delivery rather than the first.
+
 Termination takes effect after the agreed `notice_days`, so a factory is not
 left without supply overnight. Deliveries after that date are cancelled and
 refunded.
