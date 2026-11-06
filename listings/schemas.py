@@ -91,9 +91,9 @@ class ListingOut(Schema):
     images: list[ListingImageOut] = []
     owner: PublicProviderOut
 
-    # No review model exists yet, so there is nowhere for this to come from.
-    # Present and null rather than absent: the frontend already renders it,
-    # and it starts returning numbers when /rentals lands.
+    # Not filled in yet: the number lives on the seller profile
+    # (`rating_avg`). Present and null rather than absent because the frontend
+    # already renders it.
     rating: float | None = None
 
     published_at: datetime | None = None

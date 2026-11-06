@@ -24,6 +24,7 @@ from api.auth import create_access_token
 from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
+from deals.models import Deal, Review
 from listings.models import Listing, ListingImage, ListingView
 from listings.schemas import ListingUpdateIn
 from listings.views import _apply_update_listing, org_listings
@@ -293,11 +294,28 @@ class PublicFeedTests(ListingTestCase):
             self.client.get("/api/v1/listings?sort=cheapest").status_code, 400
         )
 
-    def test_rating_sort_is_accepted_while_no_reviews_exist(self):
-        """Accepted, not rejected — the UI's sort control shouldn't 400."""
-        self.make_listing()
+    def test_rating_sort_puts_the_best_rated_seller_first_and_unrated_last(self):
+        unrated = self.make_listing(title="unrated")
+        second_asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        rated = self.make_listing(
+            organization=self.rival_org, asset=self.rival_asset, title="rated"
+        )
+        newest_unrated = self.make_listing(title="newest unrated", asset=second_asset)
+        deal = Deal.objects.create(
+            provider_organization=self.rival_org,
+            customer_organization=self.org,
+            deal_type=Deal.DealType.RENT,
+            status=Deal.Status.COMPLETED,
+        )
+        Review.objects.create(deal=deal, author_organization=self.org, rating=4)
+
+        items = self.client.get("/api/v1/listings?sort=rating").json()["items"]
+
         self.assertEqual(
-            self.client.get("/api/v1/listings?sort=rating").status_code, 200
+            [i["id"] for i in items],
+            [str(x.public_id) for x in (rated, newest_unrated, unrated)],
         )
 
     def test_offer_shaped_filters(self):

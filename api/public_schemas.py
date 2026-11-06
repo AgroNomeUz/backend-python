@@ -179,7 +179,7 @@ class PublicStatsOut(Schema):
     completed_bookings: int
     completed_bookings_by_region: list[RegionOrdersOut]
     verified_owners: int
-    # No review/rating model exists yet — always null until that's built.
+    # Frozen: always null here. `/stats/landing` has the real number.
     average_rating: float | None = None
     new_listings_last_7_days: int
     new_listings_last_30_days: int

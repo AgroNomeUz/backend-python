@@ -40,6 +40,7 @@ from django.utils import timezone
 from ninja import Router
 
 from core.models import ActivityLog
+from deals.models import Deal, Review
 from equipment.models import Asset, Booking, BookingStatusHistory, EquipmentCategory
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingView, active_listing_q, active_listings
@@ -106,9 +107,9 @@ def _compute_landing_stats() -> dict:
     completed_bookings_by_region = list(
         Region.objects.annotate(
             completed_orders=Count(
-                "organizations__bookings_as_provider",
+                "organizations__deals_as_provider",
                 filter=Q(
-                    organizations__bookings_as_provider__status=Booking.Status.COMPLETED
+                    organizations__deals_as_provider__status=Deal.Status.COMPLETED
                 ),
                 distinct=True,
             )
@@ -134,12 +135,10 @@ def _compute_landing_stats() -> dict:
         .count(),
         "listings_by_region": listings_by_region,
         "listings_by_category": listings_by_category,
-        "completed_bookings": Booking.objects.filter(
-            status=Booking.Status.COMPLETED
-        ).count(),
+        "completed_bookings": Deal.objects.filter(status=Deal.Status.COMPLETED).count(),
         "completed_bookings_by_region": completed_bookings_by_region,
         "verified_owners": Organization.objects.filter(is_verified=True).count(),
-        "average_rating": None,
+        "average_rating": Review.objects.aggregate(mean=Avg("rating"))["mean"],
         # Counted on `published_at`, not `created_at`: a listing is new to the
         # public when it reaches the public. A draft written three weeks ago
         # and activated this morning is new; one drafted this morning and

@@ -32,7 +32,7 @@ from uuid import UUID
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Avg, F, OuterRef, Q, Subquery
 from django.shortcuts import aget_object_or_404, get_object_or_404
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
@@ -45,6 +45,7 @@ from api.auth import OptionalJWTBearer, authenticated_user
 from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
 from core.schemas import FiniteDecimal
+from deals.models import Review
 from equipment.models import Asset
 from equipment.views import _category_q, _size_class_filter
 from users.models import OrgPermission, Organization, Region
@@ -96,10 +97,9 @@ SORT_OPTIONS = {
     "newest": "-created_at",
     "price_asc": "price",
     "price_desc": "-price",
-    # No review model exists, so there is nothing to sort on (§4). Accepted
-    # rather than rejected so the frontend's sort control doesn't have to know
-    # that, and mapped to the default order until /rentals lands.
-    "rating": "-created_at",
+    # The provider organization's mean review rating (annotated below);
+    # unrated organizations come last.
+    "rating": F("avg_rating").desc(nulls_last=True),
 }
 
 # First bytes of each format we accept. The extension is whatever the client
@@ -242,6 +242,15 @@ async def list_listings(
         # model's default ordering outright, and this feed is paginated: with
         # ties left unordered — and identical prices are common — Postgres may
         # return a tied row on two consecutive pages, or on neither.
+        if sort == "rating":
+            qs = qs.annotate(
+                avg_rating=Subquery(
+                    Review.objects.filter(deal__provider_organization=OuterRef("organization"))
+                    .values("deal__provider_organization")
+                    .annotate(mean=Avg("rating"))
+                    .values("mean")
+                )
+            )
         qs = qs.order_by(SORT_OPTIONS[sort], "-created_at")
 
     return qs
