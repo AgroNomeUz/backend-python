@@ -331,6 +331,9 @@ LOGGING = {
     'handlers': {
         'console': {'class': 'logging.StreamHandler'},
     },
+    # Django's own handlers only print with DEBUG on, so without this a
+    # production 500 leaves no traceback anywhere.
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
     'loggers': {
         'api.sms': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
     },

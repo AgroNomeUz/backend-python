@@ -8,10 +8,12 @@ things wrong for uploads, and both of them fail *quietly* — a photo that
 has a test here, and neither would be caught by testing the upload endpoint.
 """
 
+import logging
 import tempfile
 from pathlib import Path
+from unittest import mock
 
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -102,3 +104,13 @@ class DevelopmentMediaServingTests(PublicMediaServingTests):
     Development used to be served by a `static()` URL pattern; it is the same
     middleware now, so the two cannot drift.
     """
+
+
+@override_settings(DEBUG=False)
+class ProductionLoggingTests(SimpleTestCase):
+    def test_a_500_is_written_somewhere_with_debug_off(self):
+        handlers = logging.getLogger().handlers
+        self.assertTrue(handlers)
+        with mock.patch.object(handlers[0], "emit") as emit:
+            logging.getLogger("django.request").error("Internal Server Error")
+        emit.assert_called_once()
