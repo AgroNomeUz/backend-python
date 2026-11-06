@@ -50,8 +50,9 @@ payout failed           payouts_in_transit -> wallet(seller)
 
 `python manage.py reconcile_ledger` re-derives everything from the entries and
 reports any disagreement. It also lists what only a person can settle: payouts
-stuck in `requested` or `processing`, and provider events we refused. Run it
-daily, and alert on a non-zero exit.
+stuck in `requested` or `processing`, and provider events we refused or ignored,
+such as a failed payout later reported paid. Run it daily, and alert on a
+non-zero exit.
 
 Payment events are idempotent: `WebhookEvent` is unique per provider and event
 id, and a replay is a no-op. An event about something we cannot find yet answers

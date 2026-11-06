@@ -667,6 +667,18 @@ class PayoutTests(BillingTestCase):
         self.assertEqual(done.json()["status"], "paid")
         self.assertEqual(services.wallet_balance(self.buyer), Decimal("600.00"))
 
+    def test_a_failed_payout_that_turns_out_paid_is_put_in_front_of_a_person(self):
+        deposit(self.buyer, "1000.00")
+        self.payout(self.ready_destination())
+        payout = Payout.objects.get()
+        send_event(gateways.PAYOUT_FAILED, payout.provider_reference, payout.amount)
+        self.assertEqual(needs_a_person(), [])
+
+        send_event(gateways.PAYOUT_PAID, payout.provider_reference, payout.amount)
+        problems = needs_a_person()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("ignored: payout is failed", problems[0])
+
     def test_a_retried_payout_writes_one_audit_row(self):
         deposit(self.buyer, "1000.00")
         destination = self.ready_destination()

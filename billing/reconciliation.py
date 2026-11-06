@@ -59,7 +59,7 @@ def needs_a_person(*, now=None) -> list[str]:
         status=Payout.Status.PROCESSING, created_at__lt=now - PROCESSING_TOO_LONG
     )
     events = WebhookEvent.objects.filter(
-        Q(outcome__startswith="rejected") | Q(outcome__startswith="ignored: payment"),
+        Q(outcome__startswith="rejected") | Q(outcome__startswith="ignored:"),
         received_at__gte=now - EVENT_LOOKBACK,
     )
     return [
