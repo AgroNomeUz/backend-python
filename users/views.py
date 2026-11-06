@@ -151,7 +151,8 @@ def revoke_sessions(member: User) -> None:
 
     Access tokens are stateless and live for 30 minutes, so this bounds — but
     does not instantly end — a session. Called whenever the account's standing
-    changes underneath it: deactivation, or an admin password reset.
+    changes underneath it: deactivation, an admin password reset, or a phone
+    change.
     """
     RefreshToken.objects.filter(user=member, is_revoked=False).update(is_revoked=True)
 

@@ -11,6 +11,7 @@ through the API with a real bearer token rather than calling the view — the
 guards are as much the subject as the field is.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
 from itertools import count
@@ -18,9 +19,10 @@ from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from core.test_support import auth
-from api.models import PhoneOtp
+from api.models import PhoneOtp, RefreshToken
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from listings.models import Listing
@@ -515,7 +517,7 @@ class CurrentUserUpdateTests(ProfileTestCase):
 class PhoneChangeTests(ProfileTestCase):
     """
     `POST /users/me/phone` — item 2: a phone change costs a code sent to the
-    new number.
+    new number, plus proof of the current one.
 
     The code is learned by patching the generator, never read out of a
     response — the same rule `api/tests.py` follows, and the reason
@@ -523,16 +525,20 @@ class PhoneChangeTests(ProfileTestCase):
     """
 
     NEW_PHONE = "+998905554433"
+    CURRENT_PHONE = "+998900000002"
 
     def setUp(self):
         super().setUp()
         self.issued_codes = count(100000)
         self.last_code = None
+        self.current_code = None
         patcher = patch("api.otp.get_random_string", side_effect=self._next_code)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def _next_code(self, *args, **kwargs) -> str:
+        # The current number is texted first, so this is its code.
+        self.current_code = self.last_code
         self.last_code = str(next(self.issued_codes))
         return self.last_code
 
@@ -544,20 +550,22 @@ class PhoneChangeTests(ProfileTestCase):
             **auth(user or self.member),
         )
 
-    def confirm(self, code, phone=NEW_PHONE, user=None):
+    def confirm(self, code, phone=NEW_PHONE, user=None, **proof):
+        proof = proof or {"current_code": self.current_code}
         return self.client.post(
             "/api/v1/users/me/phone/verify",
-            data={"phone": phone, "code": code},
+            data={"phone": phone, "code": code, **proof},
             content_type="application/json",
             **auth(user or self.member),
         )
 
-    def test_the_code_goes_to_the_new_number(self):
+    def test_a_code_goes_to_both_numbers(self):
         response = self.start()
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json(), {"retry_after": 60})
         self.assertEqual(PhoneOtp.objects.filter(phone=self.NEW_PHONE).count(), 1)
+        self.assertEqual(PhoneOtp.objects.filter(phone=self.CURRENT_PHONE).count(), 1)
         # Nothing is written until the code comes back.
         self.member.refresh_from_db()
         self.assertEqual(self.member.phone, "+998900000002")
@@ -594,6 +602,89 @@ class PhoneChangeTests(ProfileTestCase):
         self.assertEqual(response.status_code, 400)
         self.member.refresh_from_db()
         self.assertEqual(self.member.phone, "+998900000002")
+
+    def test_proving_only_the_new_number_is_refused(self):
+        self.start()
+
+        response = self.confirm(self.last_code, current_code=None)
+
+        self.assertEqual(response.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, self.CURRENT_PHONE)
+        # Refused before the code is spent, so the client can correct itself.
+        self.assertIsNone(PhoneOtp.objects.get(phone=self.NEW_PHONE).verified_at)
+
+    def test_a_wrong_current_code_leaves_the_number_alone(self):
+        self.start()
+
+        response = self.confirm(self.last_code, current_code="000000")
+
+        self.assertEqual(response.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, self.CURRENT_PHONE)
+
+    def test_a_throttled_new_number_sends_nothing_to_the_current_one(self):
+        PhoneOtp.objects.create(
+            phone=self.NEW_PHONE,
+            code_hash="-",
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        self.assertEqual(self.start().status_code, 429)
+        self.assertFalse(PhoneOtp.objects.filter(phone=self.CURRENT_PHONE).exists())
+
+    def test_a_throttled_current_number_sends_nothing_to_the_new_one(self):
+        PhoneOtp.objects.create(
+            phone=self.CURRENT_PHONE,
+            code_hash="-",
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        self.assertEqual(self.start().status_code, 429)
+        self.assertFalse(PhoneOtp.objects.filter(phone=self.NEW_PHONE).exists())
+
+    def test_the_swap_revokes_every_session(self):
+        session = RefreshToken.objects.create(
+            user=self.member,
+            token="old-session",
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.start()
+
+        self.assertEqual(self.confirm(self.last_code).status_code, 200)
+
+        session.refresh_from_db()
+        self.assertTrue(session.is_revoked)
+
+    def test_an_account_without_a_number_proves_itself_with_its_password(self):
+        self.member.phone = None
+        self.member.set_password("sekret-password-1")
+        self.member.save(update_fields=["phone", "password"])
+        self.start()
+        self.assertEqual(PhoneOtp.objects.count(), 1)
+
+        wrong = self.confirm(self.last_code, current_password="wrong")
+        self.assertEqual(wrong.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertIsNone(self.member.phone)
+
+        # The guess spent the new code, so password guessing is rate limited.
+        self.assertIsNotNone(PhoneOtp.objects.get(phone=self.NEW_PHONE).verified_at)
+        PhoneOtp.objects.all().delete()
+        self.start()
+        right = self.confirm(self.last_code, current_password="sekret-password-1")
+        self.assertEqual(right.status_code, 200, right.content)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.phone, self.NEW_PHONE)
+
+    def test_a_current_code_is_no_proof_for_an_account_without_a_number(self):
+        self.member.phone = None
+        self.member.save(update_fields=["phone"])
+        self.start()
+
+        response = self.confirm(self.last_code, current_code="000000")
+
+        self.assertEqual(response.status_code, 400)
 
     def test_confirming_without_starting_is_refused(self):
         response = self.confirm("123456")
@@ -724,6 +815,7 @@ class AdminSelfPhoneChangeTests(ProfileTestCase):
         self.addCleanup(patcher.stop)
 
     def _next_code(self, *args, **kwargs) -> str:
+        self.current_code = self.last_code
         self.last_code = str(next(self.issued_codes))
         return self.last_code
 
@@ -754,7 +846,11 @@ class AdminSelfPhoneChangeTests(ProfileTestCase):
 
         response = self.client.post(
             "/api/v1/users/me/phone/verify",
-            data={"phone": self.NEW_PHONE, "code": self.last_code},
+            data={
+                "phone": self.NEW_PHONE,
+                "code": self.last_code,
+                "current_code": self.current_code,
+            },
             content_type="application/json",
             **auth(self.admin),
         )

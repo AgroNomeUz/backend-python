@@ -304,8 +304,8 @@ here needs `users.manage`. A member editing their **own** profile uses
 |---------------------------------|--------|----------------|--------------------------------------|
 | `/api/v1/users/me`              | GET    | —              | Your profile with the organization nested, plus `is_owner` + `permissions` |
 | `/api/v1/users/me`              | PATCH  | —              | Your own `full_name`, `telegram`, `email` |
-| `/api/v1/users/me/phone`        | POST   | —              | Start a phone change: sends a code to the **new** number |
-| `/api/v1/users/me/phone/verify` | POST   | —              | `{phone, code}` → the swap           |
+| `/api/v1/users/me/phone`        | POST   | —              | Start a phone change: sends a code to the new number and to the current one |
+| `/api/v1/users/me/phone/verify` | POST   | —              | `{phone, code, current_code}` (or `current_password` if the account has no number) → the swap |
 | `/api/v1/org`                   | GET    | —              | The org profile + `member_count` and `created_at` |
 | `/api/v1/org`                   | PATCH  | `users.manage` | Name, address, region, tax number, phone, email |
 
@@ -319,11 +319,18 @@ and `core.ActivityLog.organization` is non-nullable, so there is no
 organization to hang the audit row on. This is a deliberate asymmetry
 between the two, not an oversight.
 
-**Changing a phone costs a code sent to the new number**, because phone is the
-login identifier: an unverified swap on a typo locks the account out, and a
-deliberate one is a takeover. The new number is checked to be free *before* a
-code is spent on it, and the swap is audited. `PATCH /users/me` therefore has
-no `phone` field.
+**Changing a phone costs a code sent to the new number and proof of the old
+one**, because phone is the login identifier: an unverified swap on a typo locks
+the account out, and a deliberate one is a takeover. The proof of the old one is
+a code sent to it, or `current_password` for an account that has no number yet.
+Without it a stolen access token could move the number, then receive the
+payout-destination code and log in by SMS for good. The new number is checked to
+be free *before* a code is spent on it, the swap is audited, and it revokes every
+refresh token, so the client signs in again. `PATCH /users/me` therefore has no
+`phone` field.
+
+**A lost phone is handled by staff in Django admin**: there is no self-service
+route, because anything that skips the old number is what a thief would use.
 
 `email`, by contrast, is accepted unverified — there is no mail gateway in this
 project, and an email signs you in only *with* a password, unlike a phone

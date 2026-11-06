@@ -138,8 +138,8 @@ class SelfUpdateIn(Schema):
 
 
 class PhoneChangeIn(Schema):
-    """The number the caller wants to move to. A code is sent to it, not to
-    the number they hold now — the point is to prove they own the new one."""
+    """The number the caller wants to move to. A code is sent to it, and to
+    the number they hold now, if any: a change has to prove both."""
 
     phone: str
 
@@ -151,8 +151,13 @@ class PhoneChangeOut(Schema):
 
 
 class PhoneChangeVerifyIn(Schema):
+    """`code` is from the new number. An account with a number proves it with
+    `current_code`; one without has only `current_password` to offer."""
+
     phone: str
     code: str
+    current_code: str | None = None
+    current_password: str | None = None
 
 
 # ── the caller's organization ─────────────────────────────────────────────────

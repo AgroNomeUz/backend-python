@@ -142,6 +142,8 @@ by deploying this. Nobody can grant a code they lack, or take over the account
 of someone who holds one. Adding a payout destination also needs a one-time code, and a
 new destination cannot receive money for `BILLING_PAYOUT_COOLDOWN_HOURS`,
 because a changed payout account is the classic way to steal a seller's money.
+That code goes to the account's phone, which moves only with proof of the old
+number, so a stolen session cannot redirect it.
 
 ## Not built yet
 
