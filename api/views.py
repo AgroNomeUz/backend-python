@@ -35,6 +35,11 @@ from farms.field_api import crop_zones_router, fields_router
 from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
+from marketplace.contract_api import contracts_router
+from marketplace.offer_api import catalog_router as market_catalog_router
+from marketplace.offer_api import offers_router
+from marketplace.order_api import disputes_router, orders_router
+from marketplace.request_api import quotes_router, requests_router
 from users.models import Organization, Region, User
 from users.organizations import organizations_router
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
@@ -106,6 +111,13 @@ api.add_router("/organizations", organizations_router)
 api.add_router("/regions", regions_router)
 api.add_router("/stats", stats_router)
 api.add_router("/billing", billing_router)
+api.add_router("/market", market_catalog_router)
+api.add_router("/market/offers", offers_router)
+api.add_router("/market/requests", requests_router)
+api.add_router("/market/quotes", quotes_router)
+api.add_router("/market/orders", orders_router)
+api.add_router("/market/disputes", disputes_router)
+api.add_router("/market/contracts", contracts_router)
 # Deprecated, all three. `/public/listings`, `/public/regions` and
 # `/public/stats` predate the Listing model and still answer with their
 # original, asset-rooted payloads so the deployed frontend keeps working;

@@ -72,6 +72,21 @@ GATED = {
         "billing/payouts",
         f"billing/payouts/{MISSING}",
     ],
+    P.VIEW_MARKET: [
+        "market/offers/my",
+        "market/requests",
+        "market/requests/my",
+        f"market/requests/{MISSING}",
+        f"market/requests/{MISSING}/quotes",
+        "market/quotes/my",
+        "market/orders",
+        f"market/orders/{MISSING}",
+    ],
+    P.VIEW_CONTRACTS: [
+        "market/contracts",
+        f"market/contracts/{MISSING}",
+        f"market/contracts/{MISSING}/orders",
+    ],
     P.VIEW_ACTIVITY: ["activity"],
 }
 
@@ -81,6 +96,8 @@ MANAGE_FOR = {
     P.VIEW_INQUIRIES: P.MANAGE_INQUIRIES,
     P.VIEW_FARMS: P.MANAGE_FARMS,
     P.VIEW_BILLING: P.MANAGE_BILLING,
+    P.VIEW_MARKET: P.MANAGE_MARKET,
+    P.VIEW_CONTRACTS: P.MANAGE_CONTRACTS,
 }
 
 
@@ -145,6 +162,8 @@ class ViewPermissionTests(TestCase):
         self.assertEqual(self.status("favorites", blind), 200)
         self.assertEqual(self.status("catalog/categories", blind), 200)
         self.assertEqual(self.status("listings", blind), 200)
+        self.assertEqual(self.status("market/offers", blind), 200)
+        self.assertEqual(self.status("market/products", blind), 200)
 
     def test_effective_permissions_include_the_implied_views(self):
         member = self.member(P.MANAGE_FARMS)

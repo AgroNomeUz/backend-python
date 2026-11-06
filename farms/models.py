@@ -331,6 +331,11 @@ class CropZone(PublicIdModel):
                 name="cropzone_area_positive",
                 violation_error_message="Crop zone area must be positive.",
             ),
+            # Lets marketplace.Offer reference (crop_zone, organization) as a
+            # composite FK.
+            models.UniqueConstraint(
+                fields=["id", "organization"], name="cropzone_id_org_unique"
+            ),
         ]
 
     def __str__(self) -> str:
