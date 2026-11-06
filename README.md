@@ -42,8 +42,7 @@ core/           Shared bases: PublicIdModel (UUID public ids), ActivityLog audit
 users/          Identity & tenancy: custom User, Organization, Region
 api/            HTTP layer: django-ninja routers, JWT auth, Pydantic schemas
 equipment/      Equipment domain: catalog (manufacturers, models, compatibility),
-                assets, pricing & availability, bookings, work orders & sessions,
-                maintenance & inspections, documents, asset events
+                assets, pricing, bookings, external references
 farms/          Farm clusters, farms, fields, boundaries, seasons, crop zones
 listings/       The machinery marketplace: offers to rent or sell a machine
 inquiries/      Contact between a renter and the owner of a machine
@@ -91,7 +90,7 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 - [x] Phone + OTP login and organization signup (SMS mocked to the log)
 - [x] Organization & Region models (B2B tenant structure)
 - [x] Signup creates owner + organization in one atomic step
-- [x] Equipment domain models (catalog, assets, pricing, bookings, work orders)
+- [x] Equipment domain models (catalog, assets, pricing, bookings)
 - [x] Equipment catalog API (models picker: manufacturers, categories, specs)
 - [x] Org asset registry API (add/edit/remove machines, org-scoped)
 - [x] Activity log — who changed what inside an organization

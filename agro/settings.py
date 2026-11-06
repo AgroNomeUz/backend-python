@@ -103,10 +103,9 @@ MEDIA_ROOT = BASE_DIR / "media"
 # Subdirectories of MEDIA_ROOT that PublicMediaWhiteNoiseMiddleware serves,
 # in development and in production alike.
 #
-# An allowlist, not a blocklist, and deliberately so: `equipment.Document`
-# writes an organization's private papers to `documents/` in this same
-# MEDIA_ROOT. Publishing all of MEDIA_ROOT would hand every one of them to
-# anyone holding the URL. Add a name here only when everything that can ever
+# An allowlist, not a blocklist, and deliberately so: a private upload (an
+# organization's papers, say) would land in this same MEDIA_ROOT. Publishing
+# all of MEDIA_ROOT would hand every one of them to anyone holding the URL. Add a name here only when everything that can ever
 # land in it is meant to be world-readable; anything else needs a
 # permission-checked endpoint instead.
 PUBLIC_MEDIA_DIRS = ["listings", "offers"]

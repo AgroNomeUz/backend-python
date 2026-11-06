@@ -70,9 +70,10 @@ class PublicMediaServingTests(TestCase):
 
     def test_private_documents_are_not_served(self):
         """
-        `equipment.Document` writes an organization's papers to `documents/`
-        in this same MEDIA_ROOT. Serving all of MEDIA_ROOT would publish
-        every one of them; PUBLIC_MEDIA_DIRS is an allowlist for that reason.
+        Anything private written to MEDIA_ROOT outside the public subtrees
+        (a `documents/` directory, say) must stay unreachable; serving all of
+        MEDIA_ROOT would publish it. PUBLIC_MEDIA_DIRS is an allowlist for
+        that reason.
         """
         url = self.write("documents/2026/08/contract.pdf", b"%PDF-1.4 private")
         response = self.client.get(url)
