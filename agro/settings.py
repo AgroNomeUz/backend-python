@@ -29,8 +29,17 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ["*"]
 ENVIRONMENT = os.environ.get('ENVIRONMENT', default='development')
+
+ALLOWED_HOSTS = ["*"]
+if ENVIRONMENT == 'production':
+    ALLOWED_HOSTS = [
+        host.strip()
+        for host in os.environ.get('ALLOWED_HOSTS', '').split(',')
+        if host.strip()
+    ]
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured("Set ALLOWED_HOSTS to this server's hostnames, comma-separated")
 
 # Application definition
 

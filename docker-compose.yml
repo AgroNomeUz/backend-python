@@ -12,18 +12,20 @@ services:
       # Django's rule for ASGI: persistent connections are per event loop task
       # and leak, so they stay off here whatever .env says.
       CONN_MAX_AGE: "0"
+      ENVIRONMENT: production
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api.agronome.uz}
     volumes:
       - media_data:/code/media
     depends_on:
         - db
+    restart: unless-stopped
   db:
     image: imresamu/postgis:16-3.5
     volumes:
       - postgres_data:/var/lib/postgresql/data
-#    ports:
-#      - "5432:5432"
     environment:
-      "POSTGRES_HOST_AUTH_METHOD": "trust"
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    restart: unless-stopped
 
 volumes:
     postgres_data:

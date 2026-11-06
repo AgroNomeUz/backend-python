@@ -126,8 +126,21 @@ docker compose up --build -d                            # production
 Both listen on **http://localhost:8081**. Interactive API docs: **/api/v1/docs**.
 
 The local file runs Django's dev server, mounts the code and turns the mock
-payment provider on. The main file runs uvicorn with four workers and keeps
-uploads in a volume. Set `ENVIRONMENT=production` there.
+payment provider on. The main file runs uvicorn with four workers, keeps uploads
+in a volume and sets `ENVIRONMENT=production`. It will not start without
+`DB_PASSWORD` in `.env`, and it serves only the hostnames in `ALLOWED_HOSTS`
+(comma-separated, default `api.agronome.uz`). A proxy in front must pass the
+original `Host` header and `X-Forwarded-Proto: https`.
+
+`POSTGRES_PASSWORD` only applies when the data volume is first created. A
+database that started under `POSTGRES_HOST_AUTH_METHOD=trust` keeps that rule and
+still accepts anyone, so set the password and change the rule yourself once:
+
+```bash
+docker compose exec db psql -U postgres -c "ALTER USER postgres PASSWORD 'the DB_PASSWORD value'"
+docker compose exec db sed -i 's/^host all all all trust$/host all all all scram-sha-256/' /var/lib/postgresql/data/pg_hba.conf
+docker compose exec db psql -U postgres -c "SELECT pg_reload_conf()"
+```
 
 ### Run migrations manually (inside container or venv)
 

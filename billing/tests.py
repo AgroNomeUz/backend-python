@@ -580,13 +580,13 @@ class MockRefusedInProductionTests(BillingTestCase):
         self.assertEqual(response.status_code, 404)
 
 
-class MockOffByDefaultTests(SimpleTestCase):
+class SettingsFileTests(SimpleTestCase):
     """Reads the real settings file: a test override could not catch this."""
 
     def settings_with(self, **env):
         clean = {"SECRET_KEY": "x", **env}
         with mock.patch.dict(os.environ, clean):
-            for name in ("BILLING_MOCK_ENABLED", "ENVIRONMENT"):
+            for name in ("ALLOWED_HOSTS", "BILLING_MOCK_ENABLED", "ENVIRONMENT"):
                 if name not in env:
                     os.environ.pop(name, None)
             return runpy.run_path(str(django_settings.BASE_DIR / "agro/settings.py"))
@@ -598,12 +598,30 @@ class MockOffByDefaultTests(SimpleTestCase):
         self.assertTrue(self.settings_with(BILLING_MOCK_ENABLED="true")["BILLING_MOCK_ENABLED"])
 
     def test_never_in_production(self):
-        loaded = self.settings_with(BILLING_MOCK_ENABLED="true", ENVIRONMENT="production")
+        loaded = self.settings_with(
+            ALLOWED_HOSTS="api.agronome.uz",
+            BILLING_MOCK_ENABLED="true",
+            ENVIRONMENT="production",
+        )
         self.assertFalse(loaded["BILLING_MOCK_ENABLED"])
 
     def test_a_commission_rate_above_one_stops_the_process(self):
         with self.assertRaises(ImproperlyConfigured):
             self.settings_with(BILLING_COMMISSION_RATE="1.5")
+
+    def test_any_host_is_allowed_outside_production(self):
+        loaded = self.settings_with(ALLOWED_HOSTS="api.agronome.uz")
+        self.assertEqual(loaded["ALLOWED_HOSTS"], ["*"])
+
+    def test_production_takes_its_hosts_from_the_environment(self):
+        loaded = self.settings_with(
+            ALLOWED_HOSTS="api.agronome.uz, agronome.uz ,", ENVIRONMENT="production"
+        )
+        self.assertEqual(loaded["ALLOWED_HOSTS"], ["api.agronome.uz", "agronome.uz"])
+
+    def test_production_with_no_hosts_stops_the_process(self):
+        with self.assertRaises(ImproperlyConfigured):
+            self.settings_with(ENVIRONMENT="production")
 
 
 class WalletApiTests(BillingTestCase):
