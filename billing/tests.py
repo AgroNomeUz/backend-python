@@ -14,10 +14,12 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest import mock
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
 from django.db import DatabaseError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
@@ -35,7 +37,7 @@ from billing.models import (
     PayoutDestination,
     WebhookEvent,
 )
-from billing.reconciliation import needs_a_person, reconcile
+from billing.reconciliation import _holds_match_entries, needs_a_person, reconcile
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
 
@@ -248,6 +250,56 @@ class EscrowTests(BillingTestCase):
         with override_settings(BILLING_COMMISSION_RATE=Decimal("0.5")):
             hold = services.release_hold(hold, Decimal("1000.00"))
         self.assertEqual(hold.commission_amount, Decimal("10.00"))
+
+
+class HoldCheckTests(BillingTestCase):
+    def test_the_check_is_one_query_however_many_holds_there_are(self):
+        deposit(self.buyer, "1000.00")
+        for _ in range(3):
+            self.hold("100.00")
+        with self.assertNumQueries(1):
+            self.assertEqual(_holds_match_entries(), [])
+
+    def test_each_total_that_disagrees_is_named(self):
+        deposit(self.buyer, "1000.00")
+        hold = self.hold("100.00")
+        services.release_hold(hold, Decimal("40.00"))
+        services.refund_hold(hold, Decimal("10.00"))
+        holds = EscrowHold.objects.filter(pk=hold.pk)
+
+        holds.update(
+            amount=Decimal("200.00"),
+            released_amount=Decimal("41.00"),
+            refunded_amount=Decimal("11.00"),
+        )
+        self.assertEqual(
+            _holds_match_entries(),
+            [
+                f"Hold {hold.pk}: amount disagrees with the ledger",
+                f"Hold {hold.pk}: released_amount disagrees with the ledger",
+                f"Hold {hold.pk}: refunded_amount disagrees with the ledger",
+            ],
+        )
+        holds.update(
+            amount=Decimal("100.00"),
+            released_amount=Decimal("40.00"),
+            refunded_amount=Decimal("10.00"),
+        )
+
+    def test_a_hold_with_no_entries_at_all_is_reported(self):
+        hold = EscrowHold.objects.create(
+            payer_organization=self.buyer,
+            payee_organization=self.seller,
+            status=EscrowHold.Status.SETTLED,
+            amount=Decimal("100.00"),
+            commission_rate=Decimal("0"),
+            reference_type="test.thing",
+            reference_id=uuid.uuid4(),
+        )
+        self.assertEqual(
+            _holds_match_entries(), [f"Hold {hold.pk}: amount disagrees with the ledger"]
+        )
+        hold.delete()
 
 
 class ProviderEventTests(BillingTestCase):
@@ -742,6 +794,32 @@ class PayoutTests(BillingTestCase):
             self.outsider_owner,
         )
         self.assertEqual(response.status_code, 404)
+
+
+class ReconcileCommandTests(TransactionTestCase):
+    """Outside a test transaction: SET TRANSACTION has to be its first statement."""
+
+    def test_every_check_reads_one_read_only_snapshot(self):
+        seen = []
+
+        def record_transaction():
+            with connection.cursor() as cursor:
+                cursor.execute("SHOW transaction_isolation")
+                seen.append(cursor.fetchone()[0])
+                cursor.execute("SHOW transaction_read_only")
+                seen.append(cursor.fetchone()[0])
+            return []
+
+        with mock.patch(
+            "billing.management.commands.reconcile_ledger.reconcile", record_transaction
+        ):
+            call_command("reconcile_ledger", stdout=StringIO())
+        self.assertEqual(seen, ["repeatable read", "on"])
+
+    def test_the_real_checks_run_inside_it(self):
+        out = StringIO()
+        call_command("reconcile_ledger", stdout=out)
+        self.assertIn("The ledger reconciles.", out.getvalue())
 
 
 @override_settings(BILLING_MOCK_ENABLED=True)

@@ -11,7 +11,8 @@ matters most in production, and it can only be added with a real provider.
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .models import (
@@ -32,7 +33,12 @@ EVENT_LOOKBACK = timedelta(days=2)
 
 
 def reconcile() -> list[str]:
-    """Every problem found, as readable lines. An empty list means all is well."""
+    """
+    Every problem found, as readable lines. An empty list means all is well.
+
+    The checks are separate queries, so outside a single snapshot money moving
+    between two of them looks like a mismatch. `reconcile_ledger` takes one.
+    """
     return [
         *_ledger_balances(),
         *_wallets_not_overdrawn(),
@@ -110,22 +116,35 @@ def _escrow_matches_holds() -> list[str]:
 
 
 def _holds_match_entries() -> list[str]:
-    problems = []
-    for hold in EscrowHold.objects.all():
-        rows = LedgerEntry.objects.filter(
-            transaction__hold=hold, account__kind=LedgerAccount.Kind.ESCROW
+    def escrow_total(kind):
+        return Coalesce(
+            Sum(
+                "transactions__entries__amount",
+                filter=Q(
+                    transactions__kind=kind,
+                    transactions__entries__account__kind=LedgerAccount.Kind.ESCROW,
+                ),
+            ),
+            Decimal(0),
         )
 
-        def total(kind):
-            return rows.filter(transaction__kind=kind).aggregate(total=Sum("amount"))[
-                "total"
-            ] or Decimal(0)
-
-        if total(LedgerTransaction.Kind.HOLD) != hold.amount:
+    # From the holds, not the entries: a hold with no entries at all is a mismatch.
+    mismatched = EscrowHold.objects.annotate(
+        held=escrow_total(LedgerTransaction.Kind.HOLD),
+        released=-escrow_total(LedgerTransaction.Kind.RELEASE),
+        refunded=-escrow_total(LedgerTransaction.Kind.REFUND),
+    ).exclude(
+        held=F("amount"),
+        released=F("released_amount"),
+        refunded=F("refunded_amount"),
+    )
+    problems = []
+    for hold in mismatched:
+        if hold.held != hold.amount:
             problems.append(f"Hold {hold.pk}: amount disagrees with the ledger")
-        if -total(LedgerTransaction.Kind.RELEASE) != hold.released_amount:
+        if hold.released != hold.released_amount:
             problems.append(f"Hold {hold.pk}: released_amount disagrees with the ledger")
-        if -total(LedgerTransaction.Kind.REFUND) != hold.refunded_amount:
+        if hold.refunded != hold.refunded_amount:
             problems.append(f"Hold {hold.pk}: refunded_amount disagrees with the ledger")
     return problems
 

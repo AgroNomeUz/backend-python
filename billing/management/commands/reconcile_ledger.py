@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connection, transaction
 
 from billing.reconciliation import needs_a_person, reconcile
 
@@ -10,7 +11,13 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
-        problems = [*reconcile(), *needs_a_person()]
+        # One snapshot, so a release landing mid-check is not a false alarm. Here
+        # and not in `reconcile()`, which tests call inside a transaction already
+        # under way, where SET TRANSACTION is an error.
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            problems = [*reconcile(), *needs_a_person()]
         for problem in problems:
             self.stderr.write(problem)
         if problems:
