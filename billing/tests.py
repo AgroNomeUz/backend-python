@@ -679,6 +679,20 @@ class PayoutTests(BillingTestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("ignored: payout is failed", problems[0])
 
+    def test_a_payout_event_with_the_wrong_amount_changes_nothing(self):
+        deposit(self.buyer, "1000.00")
+        self.payout(self.ready_destination())
+        payout = Payout.objects.get()
+        send_event(gateways.PAYOUT_PAID, payout.provider_reference, "1.00")
+
+        payout.refresh_from_db()
+        self.assertEqual(payout.status, Payout.Status.PROCESSING)
+        in_transit = services.platform_account(LedgerAccount.Kind.PAYOUTS_IN_TRANSIT)
+        self.assertEqual(services.balance_of(in_transit), Decimal("400.00"))
+        problems = needs_a_person()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("does not match", problems[0])
+
     def test_a_retried_payout_writes_one_audit_row(self):
         deposit(self.buyer, "1000.00")
         destination = self.ready_destination()
