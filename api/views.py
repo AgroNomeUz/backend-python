@@ -48,7 +48,7 @@ from users.organizations import organizations_router
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
 from users.services import is_uzbek_phone, normalize_phone, username_for_phone
 from users.iam import iam_router
-from users.views import members_router
+from users.views import members_router, revoke_sessions
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
     REFRESH_TOKEN_LIFETIME,
@@ -439,9 +439,7 @@ def _change_password(user: User, data: PasswordChangeIn) -> None:
         user.must_change_password = False
         user.save(update_fields=["password", "must_change_password"])
         # The caller gets a fresh pair below; everything else is now stale.
-        RefreshToken.objects.filter(user=user, is_revoked=False).update(
-            is_revoked=True
-        )
+        revoke_sessions(user)
 
 
 _change_password_async = sync_to_async(_change_password)

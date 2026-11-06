@@ -26,7 +26,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from api.auth import create_access_token, create_signup_token
+from api.auth import create_access_token, create_refresh_token, create_signup_token
 from core.test_support import auth
 from api.models import PhoneOtp, RefreshToken, hash_refresh_token
 from api.otp import OtpThrottled, issue_otp
@@ -949,6 +949,20 @@ class FirstPasswordTests(AuthTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("no phone number", response.json()["detail"])
+
+    def test_a_change_ends_a_token_inside_the_rotation_grace_window(self):
+        token = create_refresh_token(self.owner.public_id)
+        RefreshToken.objects.create(
+            user=self.owner,
+            token_hash=hash_refresh_token(token),
+            expires_at=timezone.now() + timedelta(days=1),
+            is_revoked=True,
+            rotated_at=timezone.now(),
+        )
+
+        self.assertEqual(self.change(code=self.request_code()).status_code, 200)
+
+        self.assertEqual(self.post("token/refresh", {"refresh_token": token}).status_code, 401)
 
     def test_a_code_does_not_replace_a_password_that_exists(self):
         self.owner.set_password("existing-password-1")
