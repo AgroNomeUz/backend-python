@@ -154,7 +154,9 @@ def revoke_sessions(member: User) -> None:
     changes underneath it: deactivation, an admin password reset, or a phone
     change.
     """
-    RefreshToken.objects.filter(user=member, is_revoked=False).update(is_revoked=True)
+    # Clearing `rotated_at` also shuts the refresh grace window: a just-rotated
+    # token counts as revoked already, yet could otherwise still mint a session.
+    RefreshToken.objects.filter(user=member).update(is_revoked=True, rotated_at=None)
 
 
 def protect_owner(member: User, reason: str) -> None:

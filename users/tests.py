@@ -22,7 +22,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.test_support import auth
-from api.models import PhoneOtp, RefreshToken
+from api.auth import create_refresh_token
+from api.models import PhoneOtp, RefreshToken, hash_refresh_token
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from listings.models import Listing
@@ -655,6 +656,26 @@ class PhoneChangeTests(ProfileTestCase):
 
         session.refresh_from_db()
         self.assertTrue(session.is_revoked)
+
+    def test_the_swap_ends_a_token_inside_the_rotation_grace_window(self):
+        token = create_refresh_token(self.member.public_id)
+        RefreshToken.objects.create(
+            user=self.member,
+            token_hash=hash_refresh_token(token),
+            expires_at=timezone.now() + timedelta(days=1),
+            is_revoked=True,
+            rotated_at=timezone.now(),
+        )
+        self.start()
+        self.assertEqual(self.confirm(self.last_code).status_code, 200)
+
+        refresh = self.client.post(
+            "/api/v1/auth/token/refresh",
+            data={"refresh_token": token},
+            content_type="application/json",
+        )
+
+        self.assertEqual(refresh.status_code, 401, refresh.content)
 
     def test_an_account_without_a_number_proves_itself_with_its_password(self):
         self.member.phone = None
