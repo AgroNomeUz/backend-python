@@ -28,6 +28,7 @@ from .models import (
     Manufacturer,
     PricingRule,
 )
+from listings.models import Listing
 
 
 class ModelInvariantTests(TestCase):
@@ -212,11 +213,24 @@ class PublicEndpointTests(TestCase):
             equipment_model=cls.equipment_model,
             operational_status=Asset.OperationalStatus.RETIRED,
         )
+        cls.list_asset(cls.available_asset)
         PricingRule.objects.create(
             organization=cls.org,
             asset=cls.available_asset,
             pricing_unit=PricingRule.PricingUnit.DAY,
             price=Decimal("250000.00"),
+        )
+
+    @staticmethod
+    def list_asset(asset):
+        return Listing.objects.create(
+            organization=asset.organization,
+            asset=asset,
+            listing_type=Listing.ListingType.RENT,
+            status=Listing.Status.ACTIVE,
+            title="Offer",
+            price=Decimal("1"),
+            price_unit=Listing.PriceUnit.DAY,
         )
 
     def setUp(self):
@@ -233,6 +247,18 @@ class PublicEndpointTests(TestCase):
         ids = {item["id"] for item in response.json()["items"]}
         self.assertIn(str(self.available_asset.public_id), ids)
         self.assertNotIn(str(self.retired_asset.public_id), ids)
+
+    def test_unlisted_asset_is_not_public(self):
+        asset = Asset.objects.create(
+            organization=self.org,
+            equipment_model=self.equipment_model,
+            operational_status=Asset.OperationalStatus.AVAILABLE,
+        )
+        items = self.client.get("/api/v1/public/listings").json()["items"]
+        self.assertNotIn(str(asset.public_id), {i["id"] for i in items})
+        self.assertEqual(
+            self.client.get(f"/api/v1/public/listings/{asset.public_id}").status_code, 404
+        )
 
     def test_retired_asset_detail_404s(self):
         response = self.client.get(
@@ -276,6 +302,7 @@ class PublicEndpointTests(TestCase):
             equipment_model=self.equipment_model,
             operational_status=Asset.OperationalStatus.AVAILABLE,
         )
+        self.list_asset(unpriced_asset)
 
         response = self.client.get(f"/api/v1/public/listings/{unpriced_asset.public_id}")
 

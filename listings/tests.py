@@ -896,6 +896,7 @@ class DeprecatedPublicPathTests(ListingTestCase):
     """
 
     def test_public_listings_still_answers_from_the_asset_root(self):
+        self.make_listing()
         response = self.client.get("/api/v1/public/listings")
         self.assertEqual(response.status_code, 200)
         items = {item["id"]: item for item in response.json()["items"]}
