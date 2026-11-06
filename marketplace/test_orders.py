@@ -864,11 +864,21 @@ class ReliabilityTests(MarketTestCase):
     def test_a_seller_who_lets_buyers_down_scores_badly(self):
         settled = self.order_at("delivered")
         self.post(path(settled, "accept"))
-        declined = self.order_at("pending_confirmation")
-        self.post(path(declined, "decline"), user=self.seller_owner)
+        dropped = self.order_at("awaiting_payment")
+        self.post(path(dropped, "cancel"), user=self.seller_owner)
         data = provider_reliability(self.seller)
         self.assertEqual(data["orders"], 2)
         self.assertEqual(data["fill_rate"], Decimal("0.5000"))
+
+    def test_orders_the_seller_never_confirmed_cost_nothing(self):
+        settled = self.order_at("delivered")
+        self.post(path(settled, "accept"))
+        declined = self.order_at("pending_confirmation")
+        self.post(path(declined, "decline"), user=self.seller_owner)
+        services.expire_unconfirmed(self.order_at("pending_confirmation"))
+        data = provider_reliability(self.seller)
+        self.assertEqual(data["orders"], 1)
+        self.assertEqual(data["fill_rate"], Decimal("1.0000"))
 
     def test_a_buyer_walking_away_is_not_the_sellers_fault(self):
         settled = self.order_at("delivered")

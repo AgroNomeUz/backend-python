@@ -92,7 +92,7 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 
 | If nobody acts on | What happens | Counted against |
 | --- | --- | --- |
-| `pending_confirmation`, past `confirm_by` | Expires, stock returns | Seller |
+| `pending_confirmation`, past `confirm_by` | Expires, stock returns | Nobody: placing an order is free, so counting this or a decline would let a rival wreck a seller's score |
 | `awaiting_payment`, past `pay_by` | Expires, stock returns | Buyer |
 | `paid`, over `ORDER_DISPATCH_GRACE_DAYS` after the delivery date | Refunded | Seller |
 | `dispatched`, once the delivery day and the window are over | Accepted, seller paid | Nobody |

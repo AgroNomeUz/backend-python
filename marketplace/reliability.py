@@ -3,11 +3,13 @@ marketplace/reliability.py
 How dependable a seller has been, from what actually happened.
 
 Stars are opinions; a factory that needs tomatoes every morning wants to know
-whether they turned up. Everything here is derived from orders, so there is
-nothing to fake without moving real money through the platform.
+whether they turned up. Everything here is derived from orders.
 
 Over the trailing window, among orders a seller was responsible for. Orders the
 buyer walked away from are left out, so a seller is not marked down for that.
+So are orders the seller never confirmed: placing one is free, so counting a
+decline would let a rival wreck the score. Raising it still takes real money: a
+seller selling to its own second organization pays commission on every sale.
 """
 
 from datetime import timedelta
@@ -42,6 +44,7 @@ def provider_reliability(organization: Organization) -> dict:
     failed = orders.filter(
         Q(status__in=[Status.DECLINED, Status.EXPIRED, Status.CANCELLED]),
         cancelled_by=Side.PROVIDER,
+        confirmed_at__isnull=False,
     )
     delivered = settled.filter(delivered_at__isnull=False)
 

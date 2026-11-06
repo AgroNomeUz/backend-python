@@ -378,15 +378,14 @@ class GeneratingTests(MarketTestCase):
                 )
         self.assertIn("order_contract_same_provider_fk", str(caught.exception))
 
-    def test_a_delivery_nobody_confirms_counts_against_the_seller(self):
+    def test_a_delivery_nobody_confirms_expires_without_touching_the_score(self):
         contract = self.active_contract()
         contract.orders.update(confirm_by=timezone.now() - timedelta(minutes=1))
         jobs.run_all()
         order = contract.orders.order_by("delivery_date").first()
         self.assertEqual(order.status, Status.EXPIRED)
         self.assertEqual(order.cancelled_by, Side.PROVIDER)
-        self.assertGreater(provider_reliability(self.seller)["orders"], 0)
-        self.assertEqual(provider_reliability(self.seller)["fill_rate"], Decimal("0.0000"))
+        self.assertEqual(provider_reliability(self.seller)["orders"], 0)
 
 
 class FundingTests(MarketTestCase):

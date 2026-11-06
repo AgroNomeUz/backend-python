@@ -691,8 +691,8 @@ class Order(PublicIdModel):
         db_index=True,
     )
     # Whose doing it was that this ended early. Feeds the reliability score: a
-    # buyer cancelling is not the seller's failure, and an order that nobody
-    # confirmed is.
+    # buyer cancelling is not the seller's failure, and neither is an order the
+    # seller never confirmed.
     cancelled_by = models.CharField(max_length=10, choices=Side.choices, blank=True)
     cancel_reason = models.TextField(blank=True)
 
