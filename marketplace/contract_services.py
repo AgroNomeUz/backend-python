@@ -413,7 +413,7 @@ def sync_orders_with_terms(contract: SupplyContract) -> int:
     return changed
 
 
-def sync_all_contracts() -> int:
+def sync_all_contracts(failures: list) -> int:
     changed = 0
     open_order = Q(
         orders__status__in=UNDISPATCHED, orders__delivery_date__gte=market_today()
@@ -426,6 +426,7 @@ def sync_all_contracts() -> int:
             changed += sync_orders_with_terms(contract)
         except Exception:
             logger.exception("Could not sync contract %s", contract.pk)
+            failures.append(contract.pk)
     return changed
 
 
@@ -458,7 +459,7 @@ def generate_orders(contract: SupplyContract, horizon_days: int | None = None) -
     return created
 
 
-def generate_all_orders() -> int:
+def generate_all_orders(failures: list) -> int:
     total = 0
     active = SupplyContract.objects.filter(status=ContractStatus.ACTIVE).select_related(
         "provider_organization", "customer_organization", "product"
@@ -468,6 +469,7 @@ def generate_all_orders() -> int:
             total += generate_orders(contract)
         except Exception:
             logger.exception("Could not generate orders for contract %s", contract.pk)
+            failures.append(contract.pk)
     return total
 
 

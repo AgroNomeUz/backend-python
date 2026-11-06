@@ -8,7 +8,7 @@ services:
       - "8081:8080"
     env_file:
       - .env
-    environment:
+    environment: &app_environment
       # Django's rule for ASGI: persistent connections are per event loop task
       # and leak, so they stay off here whatever .env says.
       CONN_MAX_AGE: "0"
@@ -16,6 +16,30 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api.agronome.uz}
     volumes:
       - media_data:/code/media
+    depends_on:
+        - db
+    restart: unless-stopped
+  scheduler:
+    build: .
+    # A failing command is reported and the loop carries on. It waits first so a
+    # fresh start does not race the database. "Daily" means the first pass of
+    # each UTC date, and again after a restart.
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          sleep 300
+          python manage.py run_market_jobs || echo "SCHEDULER FAILED: run_market_jobs"
+          if [ "$$(date +%F)" != "$$last_daily" ]; then
+            last_daily=$$(date +%F)
+            python manage.py reconcile_ledger || echo "SCHEDULER FAILED: reconcile_ledger"
+            python manage.py purge_auth_rows || echo "SCHEDULER FAILED: purge_auth_rows"
+          fi
+        done
+    env_file:
+      - .env
+    environment: *app_environment
     depends_on:
         - db
     restart: unless-stopped

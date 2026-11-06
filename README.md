@@ -168,16 +168,25 @@ See [`equipment/demo_data/README.md`](equipment/demo_data/README.md).
 
 ### Scheduled jobs
 
-Nothing runs these for you yet, so add them to cron before relying on them:
+The `scheduler` service in `docker-compose.yml` runs these. Nothing else does, so
+the local compose file and a bare `runserver` have no scheduled jobs:
 
 ```bash
-python manage.py run_market_jobs    # every few minutes: order deadlines, auto-accept, contract deliveries
+python manage.py run_market_jobs    # every 5 minutes: order deadlines, auto-accept, contract deliveries
 python manage.py reconcile_ledger   # daily: exits non-zero if the books disagree
+python manage.py purge_auth_rows    # daily: clears out expired auth rows
 ```
 
 Without `run_market_jobs`, a delivered order is never accepted automatically
-and a seller waits for the buyer indefinitely. Both commands are safe to run
-as often as you like.
+and a seller waits for the buyer indefinitely. All three are safe to run as often
+as you like.
+
+A command that fails does not stop the loop, so failures show only in the log.
+Alert on this line:
+
+```bash
+docker compose logs scheduler | grep "SCHEDULER FAILED"
+```
 
 ---
 

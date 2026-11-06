@@ -282,6 +282,24 @@ class GeneratingTests(MarketTestCase):
         self.assertEqual(jobs.run_all()["contract_orders"], 0)
         self.assertEqual(contract.orders.count(), count)
 
+    def test_a_contract_that_cannot_generate_counts_as_a_failure(self):
+        self.active_contract()
+        with self.assertLogs("marketplace.contract_services", level="ERROR"):
+            with mock.patch(
+                "marketplace.contract_services.generate_orders",
+                side_effect=RuntimeError("boom"),
+            ):
+                self.assertEqual(jobs.run_all()["failed"], 1)
+
+    def test_a_contract_that_cannot_sync_counts_as_a_failure(self):
+        self.active_contract()
+        with self.assertLogs("marketplace.contract_services", level="ERROR"):
+            with mock.patch(
+                "marketplace.contract_services.sync_orders_with_terms",
+                side_effect=RuntimeError("boom"),
+            ):
+                self.assertEqual(jobs.run_all()["failed"], 1)
+
     def test_the_horizon_moves_forward(self):
         contract = self.active_contract()
         with override_settings(CONTRACT_GENERATION_HORIZON_DAYS=6):

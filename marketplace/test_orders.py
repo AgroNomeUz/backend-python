@@ -10,9 +10,11 @@ happen once, and always finish by checking the balances.
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+from django.core.management import CommandError, call_command
 from django.db import IntegrityError, connection, transaction
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
@@ -716,6 +718,29 @@ class DeadlineTests(MarketTestCase):
                 self.assertEqual(jobs.run_all()["auto_accepted"], 1)
         good.refresh_from_db()
         self.assertEqual(good.status, Status.SETTLED)
+
+    def test_one_bad_order_fails_the_command_after_the_others_have_run(self):
+        good = self.order_at("delivered")
+        bad = self.order_at("delivered", amount="800000.00")
+        self.overdue(good, "acceptance_deadline")
+        self.overdue(bad, "acceptance_deadline")
+        original = services.accept_order
+
+        def explode_on_bad(actor, order):
+            if order.pk == bad.pk:
+                raise RuntimeError("boom")
+            return original(actor, order)
+
+        with self.assertLogs("marketplace.jobs", level="ERROR"):
+            with mock.patch("marketplace.jobs.accept_order", explode_on_bad):
+                with self.assertRaises(CommandError):
+                    call_command("run_market_jobs", stdout=StringIO())
+        good.refresh_from_db()
+        self.assertEqual(good.status, Status.SETTLED)
+
+    def test_a_clean_run_reports_no_failures(self):
+        self.assertEqual(jobs.run_all()["failed"], 0)
+        call_command("run_market_jobs", stdout=StringIO())
 
 
 class NoMoneyLeftStrandedTests(MarketTestCase):

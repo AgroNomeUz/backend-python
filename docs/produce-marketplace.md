@@ -51,8 +51,8 @@ payout failed           payouts_in_transit -> wallet(seller)
 `python manage.py reconcile_ledger` re-derives everything from the entries and
 reports any disagreement. It also lists what only a person can settle: payouts
 stuck in `requested` or `processing`, and provider events we refused or ignored,
-such as a failed payout later reported paid. Run it daily, and alert on a
-non-zero exit.
+such as a failed payout later reported paid. The `scheduler` service runs it
+daily and logs `SCHEDULER FAILED` on a non-zero exit, so alert on that.
 
 Payment events are idempotent: `WebhookEvent` is unique per provider and event
 id, and a replay is a no-op. An event about something we cannot find yet answers
@@ -87,8 +87,8 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
   in dispute. The seller can concede (refund), or platform staff split it.
 - **Deadlines** mean every order reaches an end even if both sides go quiet, so
   money can never be left in escrow with nobody able to move it.
-  `python manage.py run_market_jobs` applies them; run it from cron every few
-  minutes.
+  `python manage.py run_market_jobs` applies them. The `scheduler` service runs
+  it every five minutes, and it exits non-zero if any order failed.
 
 | If nobody acts on | What happens | Counted against |
 | --- | --- | --- |
