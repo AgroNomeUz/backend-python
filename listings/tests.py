@@ -14,15 +14,20 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection, transaction
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 
 from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
+from deals.models import Deal, Review
 from listings.models import Listing, ListingImage, ListingView
+from listings.schemas import ListingUpdateIn
+from listings.views import _apply_update_listing, org_listings
 from users.models import OrgPermission, Organization, Region, User
 
 # A real, minimal PNG — the upload endpoint sniffs the leading bytes, so a
@@ -32,11 +37,6 @@ PNG_BYTES = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class ListingTestCase(TestCase):
@@ -294,11 +294,28 @@ class PublicFeedTests(ListingTestCase):
             self.client.get("/api/v1/listings?sort=cheapest").status_code, 400
         )
 
-    def test_rating_sort_is_accepted_while_no_reviews_exist(self):
-        """Accepted, not rejected — the UI's sort control shouldn't 400."""
-        self.make_listing()
+    def test_rating_sort_puts_the_best_rated_seller_first_and_unrated_last(self):
+        unrated = self.make_listing(title="unrated")
+        second_asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        rated = self.make_listing(
+            organization=self.rival_org, asset=self.rival_asset, title="rated"
+        )
+        newest_unrated = self.make_listing(title="newest unrated", asset=second_asset)
+        deal = Deal.objects.create(
+            provider_organization=self.rival_org,
+            customer_organization=self.org,
+            deal_type=Deal.DealType.RENT,
+            status=Deal.Status.COMPLETED,
+        )
+        Review.objects.create(deal=deal, author_organization=self.org, rating=4)
+
+        items = self.client.get("/api/v1/listings?sort=rating").json()["items"]
+
         self.assertEqual(
-            self.client.get("/api/v1/listings?sort=rating").status_code, 200
+            [i["id"] for i in items],
+            [str(x.public_id) for x in (rated, newest_unrated, unrated)],
         )
 
     def test_offer_shaped_filters(self):
@@ -488,6 +505,18 @@ class ListingWriteTests(ListingTestCase):
     The org-side CRUD: permission gates, org scoping, and an audit row per
     write (§0.3 — a write endpoint without one is incomplete).
     """
+
+    def test_an_edit_cannot_undo_a_sale_confirmed_meanwhile(self):
+        listing = self.make_listing()
+        stale = org_listings(self.org).get(pk=listing.pk)
+        Listing.objects.filter(pk=listing.pk).update(status=Listing.Status.SOLD)
+
+        request = SimpleNamespace(auth=self.owner, META={}, method="PATCH", path="/")
+        _apply_update_listing(request, self.org, stale, ListingUpdateIn(title="Renamed"))
+
+        listing.refresh_from_db()
+        self.assertEqual(listing.status, Listing.Status.SOLD)
+        self.assertEqual(listing.title, "Renamed")
 
     def post_listing(self, user=None, **overrides):
         body = {
@@ -885,6 +914,7 @@ class DeprecatedPublicPathTests(ListingTestCase):
     """
 
     def test_public_listings_still_answers_from_the_asset_root(self):
+        self.make_listing()
         response = self.client.get("/api/v1/public/listings")
         self.assertEqual(response.status_code, 200)
         items = {item["id"]: item for item in response.json()["items"]}

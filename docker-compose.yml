@@ -3,21 +3,54 @@ version: '5.0.2'
 services:
   web:
     build: .
-    command: python /code/manage.py runserver 0.0.0.0:8080
+    command: uvicorn agro.asgi:application --host 0.0.0.0 --port 8080 --workers 4
     ports:
       - "8081:8080"
     env_file:
       - .env
+    environment: &app_environment
+      # Django's rule for ASGI: persistent connections are per event loop task
+      # and leak, so they stay off here whatever .env says.
+      CONN_MAX_AGE: "0"
+      ENVIRONMENT: production
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-api.agronome.uz}
+    volumes:
+      - media_data:/code/media
     depends_on:
         - db
+    restart: unless-stopped
+  scheduler:
+    build: .
+    # A failing command is reported and the loop carries on. It waits first so a
+    # fresh start does not race the database. "Daily" means the first pass of
+    # each UTC date, and again after a restart.
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          sleep 300
+          python manage.py run_market_jobs || echo "SCHEDULER FAILED: run_market_jobs"
+          if [ "$$(date +%F)" != "$$last_daily" ]; then
+            last_daily=$$(date +%F)
+            python manage.py reconcile_ledger || echo "SCHEDULER FAILED: reconcile_ledger"
+            python manage.py purge_auth_rows || echo "SCHEDULER FAILED: purge_auth_rows"
+          fi
+        done
+    env_file:
+      - .env
+    environment: *app_environment
+    depends_on:
+        - db
+    restart: unless-stopped
   db:
     image: imresamu/postgis:16-3.5
     volumes:
       - postgres_data:/var/lib/postgresql/data
-#    ports:
-#      - "5432:5432"
     environment:
-      "POSTGRES_HOST_AUTH_METHOD": "trust"
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    restart: unless-stopped
 
 volumes:
     postgres_data:
+    media_data:

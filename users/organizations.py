@@ -34,6 +34,7 @@ from api.auth import OptionalJWTBearer
 from deals.models import Deal, Review
 from inquiries.models import Inquiry
 from listings.models import active_listings
+from marketplace.models import Order, SupplyContract, active_offers
 
 from .models import Organization
 from .schemas import (
@@ -57,6 +58,8 @@ async def public_organization_or_404(org_id: UUID) -> Organization:
         Organization.objects.select_related("region", "owner"), public_id=org_id
     )
     if await active_listings().filter(organization=org).aexists():
+        return org
+    if await active_offers().filter(organization=org).aexists():
         return org
     if await Deal.objects.filter(
         provider_organization=org, status=Deal.Status.COMPLETED
@@ -141,6 +144,10 @@ async def has_relationship(caller_org_id: int | None, org: Organization) -> bool
     Whether the caller's organization is the org itself or has an inquiry or
     deal with it, in either direction. Declined deals count: the two did
     transact on the platform, and the inquiry behind one exists anyway.
+
+    For produce, only a paid order or a signed contract counts. The two sides
+    need to talk about delivery by then, and the money is already on the
+    platform. Sooner would hand out a seller's phone to anyone placing an order.
     """
     if not caller_org_id:
         return False
@@ -149,9 +156,14 @@ async def has_relationship(caller_org_id: int | None, org: Organization) -> bool
     between = Q(provider_organization=org, customer_organization_id=caller_org_id) | Q(
         customer_organization=org, provider_organization_id=caller_org_id
     )
-    return await Inquiry.objects.filter(between).aexists() or await Deal.objects.filter(
-        between
-    ).aexists()
+    return (
+        await Inquiry.objects.filter(between).aexists()
+        or await Deal.objects.filter(between).aexists()
+        or await Order.objects.filter(between, hold__isnull=False).aexists()
+        or await SupplyContract.objects.filter(
+            between, status=SupplyContract.Status.ACTIVE
+        ).aexists()
+    )
 
 
 @organizations_router.get("/{org_id}/contacts", response=OrganizationContactsOut)

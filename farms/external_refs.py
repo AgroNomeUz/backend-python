@@ -31,9 +31,8 @@ from core.audit import log_activity
 from core.models import ActivityLog
 from equipment.models import ExternalReference
 from users.models import OrgPermission
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
-from .common import writable_organization
 
 
 class ExternalReferenceIn(Schema):
@@ -175,7 +174,7 @@ def add_reference_routes(router, resource: str, target_queryset) -> None:
         operation_id=f"add_{resource}_external_reference",
     )
     async def add_external_reference(request, target_id: UUID, data: ExternalReferenceIn):
-        organization = writable_organization(request)
+        organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
         target = await aget_object_or_404(
             target_queryset(organization), public_id=target_id
         )
@@ -187,7 +186,7 @@ def add_reference_routes(router, resource: str, target_queryset) -> None:
         operation_id=f"delete_{resource}_external_reference",
     )
     async def delete_external_reference(request, target_id: UUID, ref_id: UUID):
-        organization = writable_organization(request)
+        organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
         target = await aget_object_or_404(
             target_queryset(organization), public_id=target_id
         )

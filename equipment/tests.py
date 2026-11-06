@@ -3,6 +3,7 @@ import tempfile
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -12,6 +13,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import ActivityLog
+from equipment.schemas import AssetUpdateIn
+from equipment.views import _apply_update_asset, org_assets
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingImage
 from users.models import Organization, Region, User
@@ -25,6 +28,7 @@ from .models import (
     Manufacturer,
     PricingRule,
 )
+from listings.models import Listing
 
 
 class ModelInvariantTests(TestCase):
@@ -209,11 +213,24 @@ class PublicEndpointTests(TestCase):
             equipment_model=cls.equipment_model,
             operational_status=Asset.OperationalStatus.RETIRED,
         )
+        cls.list_asset(cls.available_asset)
         PricingRule.objects.create(
             organization=cls.org,
             asset=cls.available_asset,
             pricing_unit=PricingRule.PricingUnit.DAY,
             price=Decimal("250000.00"),
+        )
+
+    @staticmethod
+    def list_asset(asset):
+        return Listing.objects.create(
+            organization=asset.organization,
+            asset=asset,
+            listing_type=Listing.ListingType.RENT,
+            status=Listing.Status.ACTIVE,
+            title="Offer",
+            price=Decimal("1"),
+            price_unit=Listing.PriceUnit.DAY,
         )
 
     def setUp(self):
@@ -230,6 +247,18 @@ class PublicEndpointTests(TestCase):
         ids = {item["id"] for item in response.json()["items"]}
         self.assertIn(str(self.available_asset.public_id), ids)
         self.assertNotIn(str(self.retired_asset.public_id), ids)
+
+    def test_unlisted_asset_is_not_public(self):
+        asset = Asset.objects.create(
+            organization=self.org,
+            equipment_model=self.equipment_model,
+            operational_status=Asset.OperationalStatus.AVAILABLE,
+        )
+        items = self.client.get("/api/v1/public/listings").json()["items"]
+        self.assertNotIn(str(asset.public_id), {i["id"] for i in items})
+        self.assertEqual(
+            self.client.get(f"/api/v1/public/listings/{asset.public_id}").status_code, 404
+        )
 
     def test_retired_asset_detail_404s(self):
         response = self.client.get(
@@ -273,6 +302,7 @@ class PublicEndpointTests(TestCase):
             equipment_model=self.equipment_model,
             operational_status=Asset.OperationalStatus.AVAILABLE,
         )
+        self.list_asset(unpriced_asset)
 
         response = self.client.get(f"/api/v1/public/listings/{unpriced_asset.public_id}")
 
@@ -394,6 +424,22 @@ class AssetWriteTests(TestCase):
         token = create_access_token(self.owner.public_id)
         return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
 
+    def test_two_edits_do_not_undo_each_other(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        stale = org_assets(self.org).get(pk=asset.pk)
+        Asset.objects.filter(pk=asset.pk).update(
+            operational_status=Asset.OperationalStatus.RETIRED
+        )
+
+        request = SimpleNamespace(auth=self.owner, META={}, method="PATCH", path="/")
+        _apply_update_asset(request, self.org, stale, AssetUpdateIn(notes="Serviced"))
+
+        asset.refresh_from_db()
+        self.assertEqual(asset.operational_status, Asset.OperationalStatus.RETIRED)
+        self.assertEqual(asset.notes, "Serviced")
+
     def test_create_asset_returns_201_and_audits(self):
         """
         Also guards `equipment_model_or_404`, which stays sync because it runs
@@ -431,6 +477,19 @@ class AssetWriteTests(TestCase):
             **self.auth(),
         )
         self.assertEqual(response.status_code, 404)
+
+    def test_patch_asset_null_on_a_required_field_is_400(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        for name in ("current_meter_hours", "notes", "equipment_model_id"):
+            response = self.client.patch(
+                f"/api/v1/assets/{asset.public_id}",
+                data={name: None},
+                content_type="application/json",
+                **self.auth(),
+            )
+            self.assertEqual(response.status_code, 400, name)
 
     def test_patch_asset_records_a_status_change(self):
         asset = Asset.objects.create(
@@ -533,6 +592,14 @@ class AssetWriteTests(TestCase):
         self.assertEqual(response.status_code, 404)
         foreign.refresh_from_db()
         self.assertEqual(foreign.serial_number, "")
+
+
+class SeedDemoProductionTests(TestCase):
+    @override_settings(ENVIRONMENT="production")
+    def test_demo_accounts_are_refused_in_production(self):
+        with self.assertRaises(CommandError):
+            call_command("seed_demo", stdout=StringIO())
+        self.assertFalse(User.objects.exists())
 
 
 class SeedDemoTests(TestCase):

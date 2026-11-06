@@ -14,15 +14,11 @@ from importlib import import_module
 from django.apps import apps
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, User
 
 P = OrgPermission
 MISSING = uuid.uuid4()
-
-
-def auth(user: User) -> dict:
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 # area view code -> GETs on private data in that area
@@ -63,6 +59,30 @@ GATED = {
         f"crop-zones/{MISSING}",
         f"crop-zones/{MISSING}/activity",
     ],
+    P.VIEW_BILLING: [
+        "billing/wallet",
+        "billing/wallet/entries",
+        "billing/payments",
+        f"billing/payments/{MISSING}",
+        "billing/payout-destinations",
+        "billing/payouts",
+        f"billing/payouts/{MISSING}",
+    ],
+    P.VIEW_MARKET: [
+        "market/offers/my",
+        "market/requests",
+        "market/requests/my",
+        f"market/requests/{MISSING}",
+        f"market/requests/{MISSING}/quotes",
+        "market/quotes/my",
+        "market/orders",
+        f"market/orders/{MISSING}",
+    ],
+    P.VIEW_CONTRACTS: [
+        "market/contracts",
+        f"market/contracts/{MISSING}",
+        f"market/contracts/{MISSING}/orders",
+    ],
     P.VIEW_ACTIVITY: ["activity"],
 }
 
@@ -71,6 +91,9 @@ MANAGE_FOR = {
     P.VIEW_USERS: P.MANAGE_USERS,
     P.VIEW_INQUIRIES: P.MANAGE_INQUIRIES,
     P.VIEW_FARMS: P.MANAGE_FARMS,
+    P.VIEW_BILLING: P.MANAGE_BILLING,
+    P.VIEW_MARKET: P.MANAGE_MARKET,
+    P.VIEW_CONTRACTS: P.MANAGE_CONTRACTS,
 }
 
 
@@ -135,6 +158,8 @@ class ViewPermissionTests(TestCase):
         self.assertEqual(self.status("favorites", blind), 200)
         self.assertEqual(self.status("catalog/categories", blind), 200)
         self.assertEqual(self.status("listings", blind), 200)
+        self.assertEqual(self.status("market/offers", blind), 200)
+        self.assertEqual(self.status("market/products", blind), 200)
 
     def test_effective_permissions_include_the_implied_views(self):
         member = self.member(P.MANAGE_FARMS)
@@ -200,8 +225,9 @@ class ViewPermissionTests(TestCase):
         User.objects.filter(pk=old.pk).update(permissions=["equipment.manage"])
         migration.grant_views_to_existing_members(apps, None)
         old.refresh_from_db()
+        # The migration's own frozen list: codes added since must not appear.
         self.assertEqual(
-            old.permissions, sorted(["equipment.manage", *VIEW_PERMISSIONS])
+            old.permissions, sorted(["equipment.manage", *migration.VIEW_CODES])
         )
         self.owner.refresh_from_db()
         self.assertEqual(self.owner.permissions, [])

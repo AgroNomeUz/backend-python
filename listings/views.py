@@ -32,7 +32,7 @@ from uuid import UUID
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Avg, F, OuterRef, Q, Subquery
 from django.shortcuts import aget_object_or_404, get_object_or_404
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
@@ -44,10 +44,12 @@ from ninja.pagination import LimitOffsetPagination, paginate
 from api.auth import OptionalJWTBearer, authenticated_user
 from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
+from core.schemas import FiniteDecimal
+from deals.models import Review
 from equipment.models import Asset
-from equipment.views import _category_q, _size_class_filter, writable_organization
+from equipment.views import _category_q, _size_class_filter
 from users.models import OrgPermission, Organization, Region
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
 from .models import IMAGE_EXTENSIONS, Listing, ListingImage, ListingView, active_listings
 from .schemas import (
@@ -95,10 +97,9 @@ SORT_OPTIONS = {
     "newest": "-created_at",
     "price_asc": "price",
     "price_desc": "-price",
-    # No review model exists, so there is nothing to sort on (§4). Accepted
-    # rather than rejected so the frontend's sort control doesn't have to know
-    # that, and mapped to the default order until /rentals lands.
-    "rating": "-created_at",
+    # The provider organization's mean review rating (annotated below);
+    # unrated organizations come last.
+    "rating": F("avg_rating").desc(nulls_last=True),
 }
 
 # First bytes of each format we accept. The extension is whatever the client
@@ -169,14 +170,14 @@ async def list_listings(
     listing_type: str | None = None,
     region: str | None = None,
     manufacturer_id: UUID | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     is_self_propelled: bool | None = None,
     has_operator: bool | None = None,
     has_delivery: bool | None = None,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: FiniteDecimal | None = None,
+    max_price: FiniteDecimal | None = None,
     verified_only: bool | None = None,
     owner: UUID | None = None,
     sort: str | None = None,
@@ -241,6 +242,15 @@ async def list_listings(
         # model's default ordering outright, and this feed is paginated: with
         # ties left unordered — and identical prices are common — Postgres may
         # return a tied row on two consecutive pages, or on neither.
+        if sort == "rating":
+            qs = qs.annotate(
+                avg_rating=Subquery(
+                    Review.objects.filter(deal__provider_organization=OuterRef("organization"))
+                    .values("deal__provider_organization")
+                    .annotate(mean=Avg("rating"))
+                    .values("mean")
+                )
+            )
         qs = qs.order_by(SORT_OPTIONS[sort], "-created_at")
 
     return qs
@@ -386,7 +396,7 @@ async def create_listing(request, data: ListingCreateIn):
     changes nothing about the asset, and the same asset can carry a rental
     offer and a sale offer at once.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await sync_to_async(_apply_create_listing)(request, organization, data)
     return 201, listing
 
@@ -489,11 +499,20 @@ async def get_listing(request, listing_id: UUID):
     return listing
 
 
+@transaction.atomic
 def _apply_update_listing(request, organization, listing: Listing, data: ListingUpdateIn):
-    """Sync transactional core of `update_listing`."""
+    """
+    Sync transactional core of `update_listing`.
+
+    Waits for the row and reads it again, because `listing` was read before
+    this transaction: saving that copy could undo a sale confirmed since.
+    """
     fields = data.dict(exclude_unset=True)
     if not fields:
         return listing
+
+    Listing.objects.select_for_update().get(pk=listing.pk)
+    listing = org_listings(organization).get(pk=listing.pk)
 
     # `exclude_unset` keeps a key the caller sent explicitly as `null`, and
     # every column here but `region` is NOT NULL — so without this a valid
@@ -576,7 +595,7 @@ async def update_listing(request, listing_id: UUID, data: ListingUpdateIn):
     is a field on the listing, which is exactly what having a separate model
     buys (§0.5).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     return await sync_to_async(_apply_update_listing)(
         request, organization, listing, data
@@ -607,7 +626,7 @@ async def delete_listing(request, listing_id: UUID):
     listings, and hard-deleting would tear a hole in the organization's own
     history; the asset it points at is untouched either way.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     await sync_to_async(_apply_archive_listing)(request, organization, listing)
     return 204, None
@@ -704,7 +723,7 @@ async def add_listing_image(request, listing_id: UUID, file: UploadedFile = File
     on local disk for now; the URL that comes back is absolute, so moving to
     object storage later is not a change to this contract (§0b).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     return 201, await sync_to_async(_apply_add_image)(
         request, organization, listing, file
@@ -742,7 +761,7 @@ def _apply_delete_image(request, organization, listing: Listing, image: ListingI
 @listings_router.delete("/{listing_id}/images/{image_id}", response={204: None})
 async def delete_listing_image(request, listing_id: UUID, image_id: UUID):
     """Remove a photo. If it was the card image, the next one takes over."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     image = await aget_object_or_404(listing.images.all(), public_id=image_id)
     await sync_to_async(_apply_delete_image)(request, organization, listing, image)

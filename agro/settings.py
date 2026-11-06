@@ -10,10 +10,12 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
+from decimal import Decimal
 from pathlib import Path
 import os
 
 from corsheaders.defaults import default_headers as cors_default_headers
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -27,8 +29,17 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ["*"]
 ENVIRONMENT = os.environ.get('ENVIRONMENT', default='development')
+
+ALLOWED_HOSTS = ["*"]
+if ENVIRONMENT == 'production':
+    ALLOWED_HOSTS = [
+        host.strip()
+        for host in os.environ.get('ALLOWED_HOSTS', '').split(',')
+        if host.strip()
+    ]
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured("Set ALLOWED_HOSTS to this server's hostnames, comma-separated")
 
 # Application definition
 
@@ -56,6 +67,8 @@ INSTALLED_APPS = [
     'inquiries.apps.InquiriesConfig',
     'favorites.apps.FavoritesConfig',
     'deals.apps.DealsConfig',
+    'billing.apps.BillingConfig',
+    'marketplace.apps.MarketplaceConfig',
 ]
 
 MIDDLEWARE = [
@@ -90,18 +103,21 @@ MEDIA_ROOT = BASE_DIR / "media"
 # Subdirectories of MEDIA_ROOT that PublicMediaWhiteNoiseMiddleware serves,
 # in development and in production alike.
 #
-# An allowlist, not a blocklist, and deliberately so: `equipment.Document`
-# writes an organization's private papers to `documents/` in this same
-# MEDIA_ROOT. Publishing all of MEDIA_ROOT would hand every one of them to
-# anyone holding the URL. Add a name here only when everything that can ever
+# An allowlist, not a blocklist, and deliberately so: a private upload (an
+# organization's papers, say) would land in this same MEDIA_ROOT. Publishing
+# all of MEDIA_ROOT would hand every one of them to anyone holding the URL. Add a name here only when everything that can ever
 # land in it is meant to be world-readable; anything else needs a
 # permission-checked endpoint instead.
-PUBLIC_MEDIA_DIRS = ["listings"]
+PUBLIC_MEDIA_DIRS = ["listings", "offers"]
 
 # Listing image limits, enforced in listings/views.py before anything is
 # written to disk.
 LISTING_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 LISTING_IMAGE_MAX_COUNT = 10
+
+# django-ninja's default is no limit at all, so one public request could ask
+# for a whole table.
+NINJA_PAGINATION_MAX_LIMIT = 100
 
 # Only the public marketing site needs cross-origin access — everything else
 # (the app frontend, mobile clients) talks to the API same-origin or via a
@@ -128,9 +144,10 @@ AUTH_REFRESH_COOKIE_PATH = "/api/v1/auth/"
 # Lax is enough: console → api is same-site, and the cookie is only honoured
 # alongside a custom header (no simple cross-site request can carry one).
 AUTH_REFRESH_COOKIE_SAMESITE = "Lax"
-AUTH_REFRESH_COOKIE_SECURE = os.environ.get(
-    "AUTH_REFRESH_COOKIE_SECURE",
-    "true" if ENVIRONMENT == "production" else "false",
+# `or`, not a default: .env.example leaves this blank, and blank must not mean off.
+AUTH_REFRESH_COOKIE_SECURE = (
+    os.environ.get("AUTH_REFRESH_COOKIE_SECURE")
+    or ("true" if ENVIRONMENT == "production" else "false")
 ).lower() in ("true", "1", "yes")
 
 CSRF_TRUSTED_ORIGINS = [
@@ -210,15 +227,6 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static'), ]
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_FINDERS = [
-    "django.contrib.staticfiles.finders.FileSystemFinder",
-    "django.contrib.staticfiles.finders.AppDirectoriesFinder",
-]
-
-# STORAGES = {
-#     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-#     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
-# }
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
@@ -242,6 +250,10 @@ OTP_MAX_REQUESTS_PER_PHONE_PER_HOUR = 5
 OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
 # Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
 SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
+
+# Wrong passwords allowed per account, across /auth/login and /admin.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
 
 # Escape hatches for developing without an SMS gateway. Both are refused
 # when ENVIRONMENT is 'production' — here *and* again at the point of use in
@@ -269,6 +281,45 @@ OTP_ECHO_CODES = (
     and ENVIRONMENT != 'production'
 )
 
+# Money (billing/). UZS only for now, and never client-supplied.
+BILLING_CURRENCY = "UZS"
+# Which class in billing/gateway.py talks to the payment provider. The only
+# one so far is the mock.
+BILLING_GATEWAY = os.environ.get("BILLING_GATEWAY", "mock")
+# The mock lets a caller declare a payment succeeded, which is minting money.
+# Off unless explicitly asked for, so a server with ENVIRONMENT unset cannot
+# mint money either, and never available in production.
+BILLING_MOCK_ENABLED = (
+    os.environ.get("BILLING_MOCK_ENABLED", "").lower() == "true"
+    and ENVIRONMENT != "production"
+)
+# Placeholders until provider fees are known — see docs/produce-marketplace.md.
+# Charged to the seller on the value released to them.
+BILLING_COMMISSION_RATE = Decimal(os.environ.get("BILLING_COMMISSION_RATE", "0.015"))
+BILLING_CONTRACT_COMMISSION_RATE = Decimal(
+    os.environ.get("BILLING_CONTRACT_COMMISSION_RATE", "0.01")
+)
+# A rate is a fraction. Typing 1.5 for 1.5% would take more than the whole sale
+# from the seller, so a bad value stops the process rather than reaching money.
+for _rate in (BILLING_COMMISSION_RATE, BILLING_CONTRACT_COMMISSION_RATE):
+    if not Decimal(0) <= _rate < Decimal(1):
+        raise ImproperlyConfigured("Commission rates must be fractions, e.g. 0.015 for 1.5%")
+# How long a new payout destination waits before it can receive money.
+BILLING_PAYOUT_COOLDOWN_HOURS = int(os.environ.get("BILLING_PAYOUT_COOLDOWN_HOURS", "24"))
+
+# The produce market (marketplace/). Deliveries are planned in local dates, so
+# "today" has to mean today in Tashkent rather than in TIME_ZONE (UTC), where
+# the date is wrong until 05:00.
+MARKET_TIME_ZONE = "Asia/Tashkent"
+ORDER_CONFIRM_HOURS = 6
+ORDER_PAYMENT_HOURS = 6
+# How long a buyer has to inspect a delivery before it is accepted for them.
+ORDER_ACCEPTANCE_HOURS = 6
+# How many days after the delivery date a paid, unsent order is refunded.
+ORDER_DISPATCH_GRACE_DAYS = 1
+# How far ahead contract deliveries are turned into orders.
+CONTRACT_GENERATION_HORIZON_DAYS = 3
+
 # The mocked gateway reports undelivered messages at WARNING, which Django's
 # defaults would route to the console anyway; this pins the level so the
 # reports can't be lost, and keeps the logger addressable by name for
@@ -280,13 +331,15 @@ LOGGING = {
     'handlers': {
         'console': {'class': 'logging.StreamHandler'},
     },
+    # Django's own handlers only print with DEBUG on, so without this a
+    # production 500 leaves no traceback anywhere.
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
     'loggers': {
         'api.sms': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
     },
 }
 
 if ENVIRONMENT == 'production':
-    SECURE_BROWSER_XSS_FILTER = True
     X_FRAME_OPTIONS = 'DENY'
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 3600

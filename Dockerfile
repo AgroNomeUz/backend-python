@@ -24,5 +24,6 @@ RUN pip install pipenv && pipenv install --system --deploy
 # Copy the full project
 COPY . /code/
 
-ENV SECRET_KEY=build-time-dummy
-RUN python manage.py collectstatic --noinput --clear
+# Set for this one step only: a key left in the image would sign real tokens
+# on any server started without its own.
+RUN SECRET_KEY=build-time-dummy python manage.py collectstatic --noinput --clear

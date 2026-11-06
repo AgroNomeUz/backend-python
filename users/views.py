@@ -151,9 +151,12 @@ def revoke_sessions(member: User) -> None:
 
     Access tokens are stateless and live for 30 minutes, so this bounds — but
     does not instantly end — a session. Called whenever the account's standing
-    changes underneath it: deactivation, or an admin password reset.
+    changes underneath it: deactivation, an admin password reset, or a phone
+    change.
     """
-    RefreshToken.objects.filter(user=member, is_revoked=False).update(is_revoked=True)
+    # Clearing `rotated_at` also shuts the refresh grace window: a just-rotated
+    # token counts as revoked already, yet could otherwise still mint a session.
+    RefreshToken.objects.filter(user=member).update(is_revoked=True, rotated_at=None)
 
 
 def protect_owner(member: User, reason: str) -> None:
@@ -165,6 +168,19 @@ def protect_owner(member: User, reason: str) -> None:
     """
     if member.is_organization_owner:
         raise HttpError(403, reason)
+
+
+def require_grantable(request, codes) -> None:
+    """Otherwise `users.manage` is every permission, one new account away."""
+    missing = sorted(set(codes) - set(request.auth.org_permissions))
+    if missing:
+        raise HttpError(403, f"You cannot grant what you do not hold: {', '.join(missing)}")
+
+
+def protect_outranked(request, member: User) -> None:
+    """A password or phone you control is that member's account, and all they hold."""
+    if set(member.org_permissions) - set(request.auth.org_permissions):
+        raise HttpError(403, "This member holds permissions you do not.")
 
 
 def protect_self(request, member: User, action: str, hint: str | None = None) -> None:
@@ -261,6 +277,7 @@ def _apply_create_member(request, organization, data: MemberCreateIn, password: 
 
     phone = normalize_phone(data.phone)
     check_phone_available(phone)
+    require_grantable(request, normalize_permissions(data.permissions))
 
     with transaction.atomic():
         member = User.objects.create_user(
@@ -344,6 +361,11 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
     if not fields:
         return member
 
+    # Only `phone` is nullable; any other null reaches a NOT NULL column.
+    nulled = sorted(name for name, value in fields.items() if value is None and name != "phone")
+    if nulled:
+        raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
+
     if "phone" in fields:
         # The owner's number is the one credential staff must not be able to
         # move: phone is the OTP login identifier, so rewriting it to a number
@@ -357,6 +379,7 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
         # goes through the OTP-verified flow, not a plain PATCH.
         protect_self(request, member, "change the phone number of", hint="/users/me/phone")
         protect_owner(member, "The organization owner's phone cannot be changed by staff")
+        protect_outranked(request, member)
         fields["phone"] = normalize_phone(fields["phone"])
         check_phone_available(fields["phone"], exclude=member)
     if "permissions" in fields:
@@ -365,6 +388,7 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
         # access; make them do it from another admin account.
         protect_self(request, member, "change the permissions of")
         fields["permissions"] = normalize_permissions(fields["permissions"])
+        require_grantable(request, set(fields["permissions"]) - set(member.permissions or []))
     if "is_active" in fields:
         protect_owner(member, "The organization owner cannot be deactivated")
         protect_self(request, member, "deactivate")
@@ -488,6 +512,7 @@ async def reset_member_password(request, member_id: UUID):
         member, "The organization owner's password cannot be reset by staff"
     )
     protect_self(request, member, "reset the password of")
+    protect_outranked(request, member)
 
     password = generate_temporary_password()
     member = await sync_to_async(_apply_reset_password)(

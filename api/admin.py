@@ -1,6 +1,34 @@
+from django.conf import settings
 from django.contrib import admin
+from django.contrib.admin.forms import AdminAuthenticationForm
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
 
+from .auth import login_failures_key
 from .models import PhoneOtp, RefreshToken
+
+
+class LimitedAdminLoginForm(AdminAuthenticationForm):
+    """Guesses at `/admin` count against the same limit as `/auth/login`."""
+
+    def clean(self):
+        key = login_failures_key(self.cleaned_data.get("username"))
+        failures = cache.get(key, 0)
+        if failures >= settings.LOGIN_MAX_FAILURES:
+            raise ValidationError("Too many failed attempts. Try again later.")
+
+        try:
+            cleaned_data = super().clean()
+        except ValidationError:
+            cache.set(key, failures + 1, settings.LOGIN_LOCKOUT_SECONDS)
+            raise
+        # A blank password raises nothing here, and must not clear the count.
+        if self.user_cache is not None:
+            cache.delete(key)
+        return cleaned_data
+
+
+admin.site.login_form = LimitedAdminLoginForm
 
 
 @admin.register(PhoneOtp)
@@ -36,7 +64,8 @@ class RefreshTokenAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "user__phone", "user__email")
     ordering = ("-created_at",)
     raw_id_fields = ("user",)
-    readonly_fields = ("user", "token", "created_at", "expires_at")
+    readonly_fields = ("user", "created_at", "expires_at")
+    exclude = ("token_hash",)
 
     def has_add_permission(self, request):
         return False

@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+.idea
+.qwen
+.claude
+media
+staticfiles
+__pycache__
+*.pyc
+.DS_Store

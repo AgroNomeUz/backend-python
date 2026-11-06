@@ -10,15 +10,26 @@ below, and a helper that depended on either channel would quietly stop the
 suite from noticing if the leak came back.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from io import StringIO
 from itertools import count
+from threading import Barrier
+from time import sleep
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.contrib.auth.hashers import make_password
+from django.core.cache import cache
+from django.core.management import call_command
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from api.auth import create_access_token, create_signup_token
-from api.models import PhoneOtp, RefreshToken
+from api.auth import create_access_token, create_refresh_token, create_signup_token
+from core.test_support import auth
+from api.models import PhoneOtp, RefreshToken, hash_refresh_token
+from api.otp import OtpThrottled, issue_otp
 from api.sms import mask_phone
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
@@ -28,11 +39,6 @@ PHONE = "+998901234567"
 # Escape hatches are refused in production; most tests exercise the ordinary
 # path, so they pin the environment rather than inheriting the developer's.
 DEVELOPMENT = override_settings(ENVIRONMENT="development")
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class AuthTestCase(TestCase):
@@ -577,7 +583,7 @@ class RefreshRotationTests(AuthTestCase):
         response = self.post("token/refresh", {"refresh_token": old})
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.json()["refresh_token"], old)
-        stored = RefreshToken.objects.get(token=old)
+        stored = RefreshToken.objects.get(token_hash=hash_refresh_token(old))
         self.assertTrue(stored.is_revoked)
         self.assertIsNotNone(stored.rotated_at)
 
@@ -598,7 +604,7 @@ class RefreshRotationTests(AuthTestCase):
     def test_the_grace_window_closes(self):
         old = self.session()
         self.post("token/refresh", {"refresh_token": old})
-        RefreshToken.objects.filter(token=old).update(
+        RefreshToken.objects.filter(token_hash=hash_refresh_token(old)).update(
             rotated_at=timezone.now() - timedelta(minutes=5)
         )
         self.assertEqual(
@@ -635,7 +641,7 @@ class LogoutTests(AuthTestCase):
         response = self.post("logout", {"refresh_token": refresh}, **auth(self.user))
 
         self.assertEqual(response.status_code, 204)
-        self.assertTrue(RefreshToken.objects.get(token=refresh).is_revoked)
+        self.assertTrue(RefreshToken.objects.get(token_hash=hash_refresh_token(refresh)).is_revoked)
         # The session can no longer be extended.
         self.assertEqual(
             self.post("token/refresh", {"refresh_token": refresh}).status_code, 401
@@ -646,7 +652,7 @@ class LogoutTests(AuthTestCase):
 
         self.post("logout", {"refresh_token": first}, **auth(self.user))
 
-        self.assertFalse(RefreshToken.objects.get(token=second).is_revoked)
+        self.assertFalse(RefreshToken.objects.get(token_hash=hash_refresh_token(second)).is_revoked)
 
     def test_cannot_revoke_someone_elses_session(self):
         refresh = self.session()
@@ -657,9 +663,349 @@ class LogoutTests(AuthTestCase):
         )
 
         self.assertEqual(response.status_code, 204)
-        self.assertFalse(RefreshToken.objects.get(token=refresh).is_revoked)
+        self.assertFalse(RefreshToken.objects.get(token_hash=hash_refresh_token(refresh)).is_revoked)
 
     def test_requires_authentication(self):
         response = self.post("logout", {"refresh_token": self.session()})
 
         self.assertEqual(response.status_code, 401)
+
+
+@DEVELOPMENT
+class SmsAbuseTests(AuthTestCase):
+    """Every code sent costs money, and the caller controls most of the request."""
+
+    @override_settings(OTP_MAX_REQUESTS_PER_IP_PER_HOUR=1)
+    def test_a_made_up_address_does_not_dodge_the_limit(self):
+        # Only the last entry comes from our proxy; the rest are the caller's.
+        first = self.post(
+            "otp/request", {"phone": PHONE}, HTTP_X_FORWARDED_FOR="1.1.1.1, 9.9.9.9"
+        )
+        second = self.post(
+            "otp/request",
+            {"phone": "+998907654321"},
+            HTTP_X_FORWARDED_FOR="2.2.2.2, 9.9.9.9",
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    def test_only_uzbek_numbers_get_a_code(self):
+        for phone in ("+", "+1234567890123", "+99890123", "998901234567"):
+            response = self.post("otp/request", {"phone": phone})
+            self.assertEqual(response.status_code, 400, phone)
+        self.assertFalse(PhoneOtp.objects.exists())
+
+
+@DEVELOPMENT
+class OldCodeTests(AuthTestCase):
+    @override_settings(OTP_RESEND_COOLDOWN_SECONDS=0)
+    def test_using_the_newest_code_does_not_revive_an_older_one(self):
+        older = self.request_code()
+        newest = self.request_code()
+        self.assertEqual(
+            self.post("otp/verify", {"phone": PHONE, "code": newest}).status_code, 200
+        )
+        self.assertEqual(
+            self.post("otp/verify", {"phone": PHONE, "code": older}).status_code, 400
+        )
+
+
+class OtpBurstTests(TransactionTestCase):
+    """Real transactions and real threads: the locks are what is under test."""
+
+    BURST = 8
+
+    def burst(self, phones, ip=None):
+        """Issue for every phone at once; every issuer gets past the unlocked check."""
+        barrier = Barrier(len(phones))
+
+        def hash_together(code):
+            barrier.wait(timeout=10)
+            return make_password(code)
+
+        def issue(phone):
+            try:
+                issue_otp(phone, ip)
+            except OtpThrottled:
+                pass
+            finally:
+                connection.close()
+
+        real_create = PhoneOtp.objects.create
+
+        def create_slowly(**fields):
+            # Without a lock, every issuer is in this gap at once.
+            sleep(0.05)
+            return real_create(**fields)
+
+        with (
+            patch("api.otp.make_password", side_effect=hash_together),
+            patch.object(PhoneOtp.objects, "create", side_effect=create_slowly),
+            patch("api.otp.send_sms") as send,
+            ThreadPoolExecutor(max_workers=len(phones)) as pool,
+        ):
+            list(pool.map(issue, phones))
+        return send.call_count
+
+    def test_a_burst_for_one_number_sends_once(self):
+        self.assertEqual(self.burst([PHONE] * self.BURST), 1)
+        self.assertEqual(PhoneOtp.objects.count(), 1)
+
+    @override_settings(OTP_MAX_REQUESTS_PER_IP_PER_HOUR=1)
+    def test_a_burst_from_one_address_sends_once(self):
+        phones = [f"+99890555000{index}" for index in range(self.BURST)]
+        self.assertEqual(self.burst(phones, ip="203.0.113.7"), 1)
+
+
+class OtpThrottleCostTests(AuthTestCase):
+    def test_a_throttled_caller_costs_no_hash(self):
+        self.request_code()
+        with patch("api.otp.make_password") as hasher, self.assertRaises(OtpThrottled):
+            issue_otp(PHONE)
+        hasher.assert_not_called()
+
+
+class RefreshTokenAtRestTests(AuthTestCase):
+    def test_admin_does_not_show_the_hash(self):
+        staff = User.objects.create_superuser(username="staff")
+        row = RefreshToken.objects.create(
+            user=staff, token_hash="b" * 64, expires_at=timezone.now()
+        )
+        self.client.force_login(staff)
+
+        page = self.client.get(f"/admin/api/refreshtoken/{row.pk}/change/")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, row.token_hash)
+
+    def test_purge_deletes_only_what_is_past_its_use(self):
+        user = self.make_org()
+        now = timezone.now()
+        for name, expires_at in (("dead", now - timedelta(minutes=1)), ("live", now + timedelta(days=1))):
+            RefreshToken.objects.create(user=user, token_hash=name, expires_at=expires_at)
+        old, fresh = (
+            PhoneOtp.objects.create(phone=PHONE, code_hash="-", expires_at=now)
+            for _ in range(2)
+        )
+        PhoneOtp.objects.filter(pk=old.pk).update(created_at=now - timedelta(days=1, minutes=1))
+        PhoneOtp.objects.filter(pk=fresh.pk).update(created_at=now - timedelta(hours=23))
+        out = StringIO()
+
+        call_command("purge_auth_rows", stdout=out)
+
+        self.assertEqual(
+            list(RefreshToken.objects.values_list("token_hash", flat=True)), ["live"]
+        )
+        self.assertEqual(list(PhoneOtp.objects.all()), [fresh])
+        self.assertIn("1 refresh tokens", out.getvalue())
+        self.assertIn("1 phone OTPs", out.getvalue())
+
+
+class RefreshTokenHashMigrationTests(TransactionTestCase):
+    BEFORE = [("api", "0003_refreshtoken_rotated_at")]
+    AFTER = [("api", "0004_refreshtoken_token_hash")]
+
+    def test_existing_tokens_are_hashed_in_place(self):
+        executor = MigrationExecutor(connection)
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(self.AFTER))
+        executor.migrate(self.BEFORE)
+        old_apps = executor.loader.project_state(self.BEFORE).apps
+        user = User.objects.create_user(username="old-session")
+        old_apps.get_model("api", "RefreshToken").objects.create(
+            user_id=user.pk, token="raw.jwt.value", expires_at=timezone.now()
+        )
+
+        MigrationExecutor(connection).migrate(self.AFTER)
+
+        stored = RefreshToken.objects.get()
+        self.assertEqual(stored.token_hash, hash_refresh_token("raw.jwt.value"))
+
+
+class LoginLimitTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = User.objects.create_user(
+            username="victim", password="sekret-password-1", phone=PHONE
+        )
+
+    def login(self, password, username="victim"):
+        return self.post("login", {"username": username, "password": password})
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_guessing_stops_even_for_the_right_password(self):
+        for _ in range(3):
+            self.assertEqual(self.login("wrong").status_code, 401)
+        self.assertEqual(self.login("wrong").status_code, 429)
+        self.assertEqual(self.login("sekret-password-1").status_code, 429)
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_the_count_follows_the_account_not_the_spelling(self):
+        for spelling in ("victim", PHONE, "+998 90 123-45-67"):
+            self.assertEqual(self.login("wrong", spelling).status_code, 401)
+        self.assertEqual(self.login("wrong", PHONE).status_code, 429)
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_a_success_clears_the_count(self):
+        self.login("wrong")
+        self.login("wrong")
+        self.assertEqual(self.login("sekret-password-1").status_code, 200)
+        self.login("wrong")
+        self.login("wrong")
+        self.assertEqual(self.login("sekret-password-1").status_code, 200)
+
+
+@override_settings(LOGIN_MAX_FAILURES=3)
+class AdminLoginLimitTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        User.objects.create_superuser(username="boss", password="sekret-password-1")
+
+    def admin_login(self, password):
+        return self.client.post(
+            "/admin/login/", {"username": "boss", "password": password}
+        )
+
+    def api_login(self, password):
+        return self.post("login", {"username": "boss", "password": password})
+
+    def test_guessing_stops_even_for_the_right_password(self):
+        for _ in range(3):
+            self.assertEqual(self.admin_login("wrong").status_code, 200)
+
+        locked = self.admin_login("sekret-password-1")
+
+        self.assertEqual(locked.status_code, 200)
+        self.assertContains(locked, "Too many failed attempts")
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_the_count_is_shared_with_the_api_login(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.api_login("wrong").status_code, 401)
+        self.assertEqual(self.api_login("sekret-password-1").status_code, 429)
+
+    def test_a_success_clears_the_count(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.admin_login("sekret-password-1").status_code, 302)
+        self.client.logout()
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.admin_login("sekret-password-1").status_code, 302)
+
+    def test_a_blank_password_does_not_clear_the_count(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.admin_login("")
+        self.admin_login("wrong")
+        self.assertContains(self.admin_login("sekret-password-1"), "Too many failed")
+
+
+@DEVELOPMENT
+class FirstPasswordTests(AuthTestCase):
+    NEW_PASSWORD = "my-own-password-9"
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.owner = self.make_org(phone=PHONE)
+
+    def change(self, user=None, new_password=NEW_PASSWORD, **proof):
+        return self.client.post(
+            "/api/v1/auth/password/change",
+            data={"new_password": new_password, **proof},
+            content_type="application/json",
+            **auth(user or self.owner),
+        )
+
+    def test_a_code_sets_the_first_password(self):
+        response = self.change(code=self.request_code())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        login = self.post("login", {"username": PHONE, "password": self.NEW_PASSWORD})
+        self.assertEqual(login.status_code, 200, login.content)
+
+    def test_a_session_alone_sets_nothing(self):
+        self.assertEqual(self.change().status_code, 400)
+        self.assertEqual(self.change(code="000000").status_code, 400)
+        self.owner.refresh_from_db()
+        self.assertFalse(self.owner.has_usable_password())
+
+    def test_a_rejected_password_does_not_spend_the_code(self):
+        code = self.request_code()
+
+        self.assertEqual(self.change(code=code, new_password="123").status_code, 400)
+        self.assertEqual(self.change(code=code).status_code, 200)
+
+    def test_no_phone_and_no_password_is_refused(self):
+        member = self.make_org(username="phoneless")
+
+        response = self.change(member, code="000000")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no phone number", response.json()["detail"])
+
+    def test_a_change_ends_a_token_inside_the_rotation_grace_window(self):
+        token = create_refresh_token(self.owner.public_id)
+        RefreshToken.objects.create(
+            user=self.owner,
+            token_hash=hash_refresh_token(token),
+            expires_at=timezone.now() + timedelta(days=1),
+            is_revoked=True,
+            rotated_at=timezone.now(),
+        )
+
+        self.assertEqual(self.change(code=self.request_code()).status_code, 200)
+
+        self.assertEqual(self.post("token/refresh", {"refresh_token": token}).status_code, 401)
+
+    def test_a_code_does_not_replace_a_password_that_exists(self):
+        self.owner.set_password("existing-password-1")
+        self.owner.save(update_fields=["password"])
+
+        response = self.change(code=self.request_code())
+
+        self.assertEqual(response.status_code, 400)
+        self.owner.refresh_from_db()
+        self.assertTrue(self.owner.check_password("existing-password-1"))
+
+
+class TemporaryPasswordTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        owner = self.make_org()
+        self.member = User.objects.create_user(
+            username="new-hire",
+            password="given-by-admin-1",
+            organization=owner.organization,
+            must_change_password=True,
+        )
+
+    def get(self, path):
+        return self.client.get(f"/api/v1/{path}", **auth(self.member))
+
+    def test_a_temporary_password_opens_nothing_else(self):
+        self.assertEqual(self.get("org").status_code, 403)
+        self.assertEqual(self.get("favorites").status_code, 403)
+
+    def test_it_still_reaches_what_it_needs_to_finish_signing_in(self):
+        self.assertEqual(self.get("users/me").status_code, 200)
+        self.assertEqual(self.get("members/me").status_code, 200)
+
+    def test_choosing_a_password_opens_the_account(self):
+        changed = self.client.post(
+            "/api/v1/auth/password/change",
+            data={
+                "current_password": "given-by-admin-1",
+                "new_password": "my-own-password-9",
+            },
+            content_type="application/json",
+            **auth(self.member),
+        )
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(self.get("org").status_code, 200)

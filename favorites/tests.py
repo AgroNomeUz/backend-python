@@ -20,7 +20,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 
-from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from favorites.models import Favorite
@@ -34,11 +34,6 @@ PNG_BYTES = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class FavoriteTestCase(TestCase):

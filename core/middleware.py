@@ -19,10 +19,9 @@ through `find_file()`. Static keeps its fast prebuilt index; only media pays
 for a filesystem lookup, and it has to, because the set of files changes while
 the process runs.
 
-**Not everything under MEDIA_ROOT is public.** `equipment.Document` uploads to
-`documents/…` in the same MEDIA_ROOT, and those are an organization's private
-papers. Publishing the whole of MEDIA_ROOT would hand every one of them to
-anyone with the URL. Only the subdirectories named in
+**Not everything under MEDIA_ROOT is public.** A private upload (an
+organization's papers, say) would land in the same MEDIA_ROOT. Publishing the
+whole of MEDIA_ROOT would hand every one of them to anyone with the URL. Only the subdirectories named in
 `settings.PUBLIC_MEDIA_DIRS` are served; everything else stays unreachable
 through this middleware, and gets a real permission-checked endpoint if it
 ever needs one.

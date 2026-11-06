@@ -8,10 +8,12 @@ things wrong for uploads, and both of them fail *quietly* — a photo that
 has a test here, and neither would be caught by testing the upload endpoint.
 """
 
+import logging
 import tempfile
 from pathlib import Path
+from unittest import mock
 
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -68,9 +70,10 @@ class PublicMediaServingTests(TestCase):
 
     def test_private_documents_are_not_served(self):
         """
-        `equipment.Document` writes an organization's papers to `documents/`
-        in this same MEDIA_ROOT. Serving all of MEDIA_ROOT would publish
-        every one of them; PUBLIC_MEDIA_DIRS is an allowlist for that reason.
+        Anything private written to MEDIA_ROOT outside the public subtrees
+        (a `documents/` directory, say) must stay unreachable; serving all of
+        MEDIA_ROOT would publish it. PUBLIC_MEDIA_DIRS is an allowlist for
+        that reason.
         """
         url = self.write("documents/2026/08/contract.pdf", b"%PDF-1.4 private")
         response = self.client.get(url)
@@ -102,3 +105,13 @@ class DevelopmentMediaServingTests(PublicMediaServingTests):
     Development used to be served by a `static()` URL pattern; it is the same
     middleware now, so the two cannot drift.
     """
+
+
+@override_settings(DEBUG=False)
+class ProductionLoggingTests(SimpleTestCase):
+    def test_a_500_is_written_somewhere_with_debug_off(self):
+        handlers = logging.getLogger().handlers
+        self.assertTrue(handlers)
+        with mock.patch.object(handlers[0], "emit") as emit:
+            logging.getLogger("django.request").error("Internal Server Error")
+        emit.assert_called_once()

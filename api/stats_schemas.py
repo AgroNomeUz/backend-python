@@ -72,7 +72,7 @@ class LandingStatsOut(Schema):
     completed_bookings: int
     completed_bookings_by_region: list[RegionOrdersOut]
     verified_owners: int
-    # No review/rating model exists yet — always null until /rentals builds one.
+    # Mean `Review.rating` across all deals; null while there are no reviews.
     average_rating: float | None = None
     new_listings_last_7_days: int
     new_listings_last_30_days: int

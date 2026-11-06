@@ -11,13 +11,8 @@ to check the negative case against.
 
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from users.models import OrgPermission, Organization, Region, User
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 def polygon_geojson(

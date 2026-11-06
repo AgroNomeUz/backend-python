@@ -17,17 +17,13 @@ from django.test import Client, TestCase, TransactionTestCase
 from django.utils import timezone
 
 from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from deals.models import Deal, Review
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from inquiries.models import Inquiry
 from listings.models import Listing
 from users.models import OrgPermission, Organization, Region, User
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class DealTestCase(TestCase):
@@ -455,6 +451,21 @@ class ReviewTests(DealTestCase):
         second = self.review(rating=1, comment="Second attempt")
         self.assertEqual(second.status_code, 409)
         self.assertEqual(Review.objects.filter(deal=self.deal).count(), 1)
+
+    def test_the_unique_review_constraint_is_a_409(self):
+        """The backstop for two parallel reviews: only the database sees the race."""
+        from django.db import IntegrityError, transaction
+
+        from deals.views import _integrity_error
+
+        Review.objects.create(
+            deal=self.deal, author_organization=self.buyer_org, rating=5, comment="a"
+        )
+        with self.assertRaises(IntegrityError) as caught, transaction.atomic():
+            Review.objects.create(
+                deal=self.deal, author_organization=self.buyer_org, rating=4, comment="b"
+            )
+        self.assertEqual(_integrity_error(caught.exception).status_code, 409)
 
     def test_reviewing_past_the_window_is_a_400(self):
         self.deal.completed_at = timezone.now() - timedelta(days=31)

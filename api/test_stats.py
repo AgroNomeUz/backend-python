@@ -26,7 +26,8 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 
-from api.auth import create_access_token
+from core.test_support import auth
+from deals.models import Deal, Review
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingView
@@ -34,11 +35,6 @@ from users.models import OrgPermission, Organization, Region, User
 
 LANDING = "/api/v1/stats/landing"
 OWNER = "/api/v1/stats/owner"
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class StatsTestCase(TestCase):
@@ -160,9 +156,24 @@ class LandingStatsTests(StatsTestCase):
                 "average_owner_response_minutes",
             },
         )
-        # No review model exists yet — this must stay null, not a fabricated
-        # number.
         self.assertIsNone(data["average_rating"])
+
+    def test_completed_deals_and_reviews_feed_the_landing_numbers(self):
+        for rating in (5, 2):
+            deal = Deal.objects.create(
+                provider_organization=self.seller_org,
+                customer_organization=self.buyer_org,
+                deal_type=Deal.DealType.RENT,
+                status=Deal.Status.COMPLETED,
+            )
+            Review.objects.create(
+                deal=deal, author_organization=self.buyer_org, rating=rating
+            )
+        data = self.client.get(LANDING).json()
+        self.assertEqual(data["completed_bookings"], 2)
+        by_region = {r["code"]: r["completed_orders"] for r in data["completed_bookings_by_region"]}
+        self.assertEqual(by_region["ANS"], 2)
+        self.assertEqual(data["average_rating"], 3.5)
 
     def test_an_asset_with_no_listing_counts_on_the_old_path_only(self):
         """

@@ -39,6 +39,18 @@ _PERMISSION_INFO = {
         "farms", "Farms",
         "Create and edit farms, fields, boundaries, seasons and crop zones.",
     ),
+    OrgPermission.MANAGE_MARKET: (
+        "market", "Produce market",
+        "Publish produce offers, post purchase requests, send quotes and handle orders.",
+    ),
+    OrgPermission.MANAGE_CONTRACTS: (
+        "contracts", "Supply contracts",
+        "Propose, sign, amend and terminate long-term supply contracts.",
+    ),
+    OrgPermission.MANAGE_BILLING: (
+        "billing", "Billing",
+        "Pay for orders, top up the wallet, remove payout accounts and withdraw money.",
+    ),
     OrgPermission.VIEW_EQUIPMENT: (
         "equipment", "Equipment",
         "See the organization's machines and its own listings, including drafts.",
@@ -54,6 +66,18 @@ _PERMISSION_INFO = {
     OrgPermission.VIEW_FARMS: (
         "farms", "Farms",
         "See farms, fields, boundaries, seasons and crop zones.",
+    ),
+    OrgPermission.VIEW_MARKET: (
+        "market", "Produce market",
+        "See the organization's own offers, purchase requests, quotes and orders.",
+    ),
+    OrgPermission.VIEW_CONTRACTS: (
+        "contracts", "Supply contracts",
+        "Read supply contracts and every version of their terms.",
+    ),
+    OrgPermission.VIEW_BILLING: (
+        "billing", "Billing",
+        "See the wallet balance, statement, payments and payouts.",
     ),
     OrgPermission.VIEW_ACTIVITY: (
         "activity", "Activity",

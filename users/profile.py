@@ -15,9 +15,10 @@ Three things here are worth knowing before changing anything:
     admin endpoint 403s every non-admin employee in the org.
 
   * A **phone change is a credential change**, so it costs a code sent to the
-    new number. Phone is the OTP login identifier: an unverified swap on a
-    typo locks the account out, and an unverified swap on purpose is an
-    account takeover. `PATCH /users/me` therefore has no `phone` field.
+    new number and proof of the old one. Phone is the OTP login identifier: an
+    unverified swap on a typo locks the account out, and an unverified swap on
+    purpose is an account takeover. `PATCH /users/me` therefore has no `phone`
+    field.
 
   * `is_verified` and `entity_type` are missing from `OrganizationUpdateIn`
     rather than filtered out of it. The first drives the verified badge on
@@ -36,7 +37,7 @@ from django.db.models import Count
 from ninja import Router
 from ninja.errors import HttpError
 
-from api.otp import OtpInvalid, OtpThrottled, issue_otp, verify_otp
+from api.otp import OtpInvalid, OtpThrottled, check_otp_limits, issue_otp, verify_otp
 from api.schemas import OtpThrottledOut, UserOut
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
@@ -51,8 +52,13 @@ from .schemas import (
     PhoneChangeVerifyIn,
     SelfUpdateIn,
 )
-from .services import normalize_phone
-from .views import check_phone_available, log_member_activity, member_snapshot
+from .services import is_uzbek_phone, normalize_phone
+from .views import (
+    check_phone_available,
+    log_member_activity,
+    member_snapshot,
+    revoke_sessions,
+)
 
 me_router = Router(tags=["Profile"])
 org_router = Router(tags=["Organization"])
@@ -232,10 +238,27 @@ def _check_new_phone(user: User, raw: str | None) -> str:
     phone = normalize_phone(raw)
     if not phone:
         raise HttpError(400, "A phone number is required")
+    if not is_uzbek_phone(phone):
+        raise HttpError(400, "Enter a phone number like +998901234567")
     if phone == user.phone:
         raise HttpError(400, "This is already your phone number")
     check_phone_available(phone, exclude=user)
     return phone
+
+
+def _send_phone_change_codes(user: User, phone: str, ip: str | None):
+    """
+    Text both ends of the move, after checking both so a throttle sends neither.
+
+    shortcut: a race, or the last free slot of the IP cap, can still reach only
+    the first number; the client's retry then waits out a 60s cooldown.
+    """
+    if user.phone:
+        check_otp_limits(user.phone, ip)
+    check_otp_limits(phone, ip)
+    if user.phone:
+        issue_otp(user.phone, ip)
+    return issue_otp(phone, ip)
 
 
 @me_router.post(
@@ -244,11 +267,13 @@ def _check_new_phone(user: User, raw: str | None) -> str:
 )
 async def start_phone_change(request, data: PhoneChangeIn):
     """
-    Begin a phone change: send a code to the **new** number.
+    Begin a phone change: send a code to the **new** number, and one to the
+    current number if there is one.
 
-    To the new one, not the current one — what has to be proved is that the
-    caller can receive SMS at the number they are moving to. Nothing is
-    written until `POST /users/me/phone/verify` succeeds.
+    The new number's code proves the caller can receive SMS where they are
+    moving to; the current one's proves this is the account's holder and not
+    a stolen session. Nothing is written until `POST /users/me/phone/verify`
+    succeeds.
 
     Shares the OTP limits with login (`api/otp.py`): the resend cooldown, the
     hourly cap per number and the hourly cap per address all apply, and a
@@ -257,11 +282,40 @@ async def start_phone_change(request, data: PhoneChangeIn):
     phone = await sync_to_async(_check_new_phone)(request.auth, data.phone)
 
     try:
-        issued = await sync_to_async(issue_otp)(phone, client_ip(request))
+        issued = await sync_to_async(_send_phone_change_codes)(
+            request.auth, phone, client_ip(request)
+        )
     except OtpThrottled as exc:
         return 429, {"detail": exc.detail, "retry_after": exc.retry_after}
 
     return 200, {"retry_after": issued.retry_after}
+
+
+def _check_phone_change_proof(user: User, phone: str, data: PhoneChangeVerifyIn) -> None:
+    """
+    Prove both ends of the move, or answer 400.
+
+    The new number's code is spent first: `current_password` has no limit of
+    its own, so each guess at it has to cost a rate-limited code.
+    """
+    if user.phone and not data.current_code:
+        raise HttpError(400, "Enter the code sent to your current number")
+    if not user.phone and not data.current_password:
+        raise HttpError(400, "Enter your current password")
+
+    try:
+        verify_otp(phone, data.code)
+    except OtpInvalid as exc:
+        raise HttpError(400, str(exc))
+
+    if not user.phone:
+        if not user.check_password(data.current_password):
+            raise HttpError(400, "Current password is incorrect")
+        return
+    try:
+        verify_otp(user.phone, data.current_code)
+    except OtpInvalid as exc:
+        raise HttpError(400, f"Code for your current number: {exc}")
 
 
 def _apply_change_phone(request, organization, user: User, phone: str) -> User:
@@ -274,6 +328,7 @@ def _apply_change_phone(request, organization, user: User, phone: str) -> User:
         # handset is long enough for someone else to have claimed the number.
         check_phone_available(phone, exclude=user)
         user.save(update_fields=["phone"])
+        revoke_sessions(user)
         log_member_activity(
             request,
             organization,
@@ -288,7 +343,13 @@ def _apply_change_phone(request, organization, user: User, phone: str) -> User:
 @me_router.post("/me/phone/verify", response=UserOut)
 async def confirm_phone_change(request, data: PhoneChangeVerifyIn):
     """
-    Finish a phone change by presenting the code sent to the new number.
+    Finish a phone change with the code sent to the new number, plus
+    `current_code` from the current number, or `current_password` if the
+    account has no number yet.
+
+    Every refresh token is revoked, so any other holder of a session is out
+    once their access token runs down, and so is the caller: they sign in
+    again.
 
     The swap happens inside an authenticated session with a known
     organization, so unlike `/auth/otp/*` it is audited (§0.3) — a login
@@ -297,11 +358,7 @@ async def confirm_phone_change(request, data: PhoneChangeVerifyIn):
     """
     organization = caller_organization(request)
     phone = await sync_to_async(_check_new_phone)(request.auth, data.phone)
-
-    try:
-        await sync_to_async(verify_otp)(phone, data.code)
-    except OtpInvalid as exc:
-        raise HttpError(400, str(exc))
+    await sync_to_async(_check_phone_change_proof)(request.auth, phone, data)
 
     user = await sync_to_async(_apply_change_phone)(
         request, organization, request.auth, phone
@@ -359,6 +416,8 @@ def _apply_update_org(request, organization: Organization, data: OrganizationUpd
     # number isn't one, and two orgs may legitimately share a switchboard.
     if "phone" in fields and fields["phone"] != "":
         fields["phone"] = normalize_phone(fields["phone"])
+        if fields["phone"] is None:
+            raise HttpError(400, "Enter a valid phone number")
 
     if not fields:
         return organization

@@ -16,9 +16,15 @@ It stays queryable in the admin, where the audience is different.
 """
 
 from datetime import datetime
+from decimal import Decimal
+from typing import Annotated
 from uuid import UUID
 
 from ninja import Field, Schema
+
+# For numeric query filters: `float` lets `inf`/`nan` through to Postgres, which
+# then answers with a 500.
+FiniteDecimal = Annotated[Decimal, Field(allow_inf_nan=False)]
 
 
 class ActivityLogOut(Schema):

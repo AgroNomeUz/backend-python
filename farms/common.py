@@ -25,22 +25,7 @@ from ninja import Schema
 from ninja.errors import HttpError
 from pydantic import StringConstraints, field_validator, model_validator
 
-from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, require_perm
-
 from .units import AREA_UNITS, HECTARE, MAX_AREA_HECTARES, to_hectares
-
-
-def writable_organization(request) -> Organization:
-    """
-    The caller's organization, for an endpoint that is about to change it.
-
-    Reading farms is open to every member; changing them needs `farms.manage`,
-    which the org owner holds implicitly.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_FARMS)
-    return organization
 
 
 def _name(max_length: int):

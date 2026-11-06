@@ -37,10 +37,10 @@ from ninja.pagination import LimitOffsetPagination, paginate
 
 from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
-from core.schemas import ActivityLogOut
+from core.schemas import ActivityLogOut, FiniteDecimal
 from core.views import org_activity
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import readable_organization, writable_organization
 
 from .models import (
     Asset,
@@ -62,18 +62,6 @@ from .schemas import (
 catalog_router = Router(tags=["Catalog"], auth=None)
 assets_router = Router(tags=["Assets"])
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def writable_organization(request) -> Organization:
-    """
-    The caller's organization, for an endpoint that is about to change it.
-
-    Reading the asset registry is open to every member; changing it needs
-    `equipment.manage`, which the org owner holds implicitly.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_EQUIPMENT)
-    return organization
-
 
 # Fields whose changes are worth showing in an organization's history.
 ASSET_AUDIT_FIELDS = [
@@ -157,8 +145,8 @@ async def list_equipment_models(
     category: str | None = None,
     is_self_propelled: bool | None = None,
     hitch_category: str | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     year: int | None = None,
 ):
@@ -329,7 +317,7 @@ def _apply_create_asset(request, organization, data: AssetIn) -> Asset:
 @assets_router.post("", response={201: AssetOut})
 async def create_asset(request, data: AssetIn):
     """Register a physical machine into the caller's organization."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     asset = await sync_to_async(_apply_create_asset)(request, organization, data)
     return 201, asset
 
@@ -341,37 +329,53 @@ async def get_asset(request, asset_id: UUID):
     )
 
 
+@transaction.atomic
 def _apply_update_asset(request, organization, asset: Asset, data: AssetUpdateIn) -> Asset:
-    """Sync transactional core of `update_asset` — see the module docstring."""
+    """
+    Sync transactional core of `update_asset` — see the module docstring.
+
+    Waits for the row and reads it again, so two members' edits cannot undo
+    each other.
+    """
     fields = data.dict(exclude_unset=True)
     if not fields:
         return asset
 
-    before = asset_snapshot(asset)
-
-    if "equipment_model_id" in fields:
-        asset.equipment_model = equipment_model_or_404(fields.pop("equipment_model_id"))
-    if "location" in fields:
-        fields.pop("location")
-        asset.current_location = _point(data.location)
-    for name, value in fields.items():
-        setattr(asset, name, value)
-
-    changes = diff(before, asset_snapshot(asset))
-    if not changes:
-        return asset
-
-    action = (
-        ActivityLog.Action.STATUS_CHANGED
-        if set(changes) == {"operational_status"}
-        else ActivityLog.Action.UPDATED
+    # Only these two columns are nullable; any other null reaches a NOT NULL one.
+    nulled = sorted(
+        name
+        for name, value in fields.items()
+        if value is None and name not in ("manufacture_year", "location")
     )
+    if nulled:
+        raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
 
     with transaction.atomic():
+        Asset.objects.select_for_update().get(pk=asset.pk)
+        asset = org_assets(organization).get(pk=asset.pk)
+        before = asset_snapshot(asset)
+
+        if "equipment_model_id" in fields:
+            asset.equipment_model = equipment_model_or_404(fields.pop("equipment_model_id"))
+        if "location" in fields:
+            fields.pop("location")
+            asset.current_location = _point(data.location)
+        for name, value in fields.items():
+            setattr(asset, name, value)
+
+        changes = diff(before, asset_snapshot(asset))
+        if not changes:
+            return asset
+
+        action = (
+            ActivityLog.Action.STATUS_CHANGED
+            if set(changes) == {"operational_status"}
+            else ActivityLog.Action.UPDATED
+        )
+
         asset.save()
         log_activity(request, organization, action, asset, changes=changes)
-
-    return asset
+        return asset
 
 
 @assets_router.patch("/{asset_id}", response=AssetOut)
@@ -380,7 +384,7 @@ async def update_asset(request, asset_id: UUID, data: AssetUpdateIn):
     Partial update — only the keys present in the request body are applied.
     Records the field-level diff against the organization's activity log.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
 
     return await sync_to_async(_apply_update_asset)(
@@ -428,7 +432,7 @@ async def delete_asset(request, asset_id: UUID):
     listing, a booking, a work session — are refused at the DB level; the 409
     names what is in the way. Retire those instead of deleting them.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     asset = await aget_object_or_404(org_assets(organization), public_id=asset_id)
 
     await sync_to_async(_apply_delete_asset)(request, organization, asset)

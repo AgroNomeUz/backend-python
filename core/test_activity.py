@@ -22,18 +22,13 @@ from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 
-from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from listings.models import Listing
 from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, Region, User
 
 ACTIVITY = "/api/v1/activity"
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class ActivityTestCase(TestCase):

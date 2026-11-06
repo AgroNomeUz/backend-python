@@ -7,7 +7,7 @@ sign-in stamp the auth endpoints now leave on the user.
 from django.test import TestCase, override_settings
 
 from api.auth import create_access_token
-from api.models import RefreshToken
+from api.models import RefreshToken, hash_refresh_token
 from users.models import Organization, User
 
 COOKIE = "agro_refresh"
@@ -58,7 +58,7 @@ class CookieTransportTests(TestCase):
         self.assertEqual(cookie["samesite"], "Lax")
         self.assertEqual(cookie["domain"], ".agronome.uz")
         self.assertEqual(cookie["path"], "/api/v1/auth/")
-        self.assertTrue(RefreshToken.objects.filter(token=cookie.value).exists())
+        self.assertTrue(RefreshToken.objects.filter(token_hash=hash_refresh_token(cookie.value)).exists())
 
     # ── refreshing ───────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ class CookieTransportTests(TestCase):
         self.assertIsNone(response.json()["refresh_token"])
         new = response.cookies[COOKIE].value
         self.assertNotEqual(new, old)
-        self.assertTrue(RefreshToken.objects.get(token=old).is_revoked)
+        self.assertTrue(RefreshToken.objects.get(token_hash=hash_refresh_token(old)).is_revoked)
 
     def test_cookie_is_ignored_without_the_header(self):
         self.login(**COOKIE_MODE)
@@ -86,7 +86,7 @@ class CookieTransportTests(TestCase):
 
     def test_a_revoked_cookie_is_cleared(self):
         token = self.login(**COOKIE_MODE).cookies[COOKIE].value
-        RefreshToken.objects.filter(token=token).update(is_revoked=True)
+        RefreshToken.objects.filter(token_hash=hash_refresh_token(token)).update(is_revoked=True)
 
         response = self.post("token/refresh", **COOKIE_MODE)
         self.assertEqual(response.status_code, 401)
@@ -116,7 +116,7 @@ class CookieTransportTests(TestCase):
         )
         self.assertEqual(response.status_code, 204)
         self.assertEqual(response.cookies[COOKIE].value, "")
-        self.assertTrue(RefreshToken.objects.get(token=token).is_revoked)
+        self.assertTrue(RefreshToken.objects.get(token_hash=hash_refresh_token(token)).is_revoked)
 
 
 class SignInStampTests(TestCase):

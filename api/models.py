@@ -4,11 +4,18 @@ Credentials the auth endpoints hand out and take back: refresh tokens, and
 the one-time passcodes that back phone-first login.
 """
 
+import hashlib
+
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
 
 from core.models import PublicIdModel
+
+
+def hash_refresh_token(token: str) -> str:
+    """What is stored and looked up, so a database dump opens no sessions."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 class RefreshToken(models.Model):
@@ -17,7 +24,7 @@ class RefreshToken(models.Model):
         on_delete=models.CASCADE,
         related_name="refresh_tokens",
     )
-    token = models.TextField(unique=True)
+    token_hash = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_revoked = models.BooleanField(default=False)
@@ -26,9 +33,6 @@ class RefreshToken(models.Model):
     # window — see `REFRESH_GRACE` in api/views.py — so a reload or a second
     # tab racing the first is not signed out.
     rotated_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        indexes = [models.Index(fields=["token"])]
 
     def __str__(self):
         return f"RefreshToken(user={self.user_id}, revoked={self.is_revoked})"

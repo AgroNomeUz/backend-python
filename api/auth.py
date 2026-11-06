@@ -5,11 +5,28 @@ import jwt
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from ninja.errors import HttpError
 from ninja.security import HttpBearer
 
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=30)
 REFRESH_TOKEN_LIFETIME = timedelta(days=30)
 ACCESS_TOKEN_EXPIRE_SECONDS = int(ACCESS_TOKEN_LIFETIME.total_seconds())
+
+# All a member on a temporary password may reach. Their admin has seen that
+# password, so anything else done with it could be the admin acting as them.
+TEMPORARY_PASSWORD_PATHS = (
+    "/auth/password/change",
+    "/auth/logout",
+    "/users/me",
+    "/members/me",
+)
+
+
+def login_failures_key(username: str) -> str:
+    """The wrong-password counter `/auth/login` and `/admin` share."""
+    # shortcut: the default cache is per process, so the real limit is this
+    # times the worker count. Move it to a shared store if that stops being enough.
+    return f"login-failures:{username}"
 
 
 def _signup_token_lifetime() -> timedelta:
@@ -41,7 +58,7 @@ def create_refresh_token(user_public_id) -> str:
         "type": "refresh",
         # `iat`/`exp` have one-second resolution, so without a nonce two
         # logins in the same second encode to the identical string — and
-        # `RefreshToken.token` is unique, which turned that into a 500.
+        # `RefreshToken.token_hash` is unique, which turned that into a 500.
         "jti": uuid.uuid4().hex,
         "iat": now,
         "exp": now + REFRESH_TOKEN_LIFETIME,
@@ -118,7 +135,7 @@ class JWTBearer(HttpBearer):
         from users.models import User
 
         try:
-            return await (
+            user = await (
                 User.objects
                 .select_related(
                     "organization",
@@ -131,6 +148,10 @@ class JWTBearer(HttpBearer):
             # Unknown or deactivated user, or a token carrying something that
             # isn't a UUID — all indistinguishable to a caller: no auth.
             return None
+
+        if user.must_change_password and not request.path.endswith(TEMPORARY_PASSWORD_PATHS):
+            raise HttpError(403, "Choose your own password first.")
+        return user
 
 
 class OptionalJWTBearer(JWTBearer):
@@ -161,7 +182,11 @@ class OptionalJWTBearer(JWTBearer):
         exists to allow, so the substitution has to happen one level up.
         """
         result = super().__call__(request)
-        user = await result if result is not None else None
+        try:
+            user = await result if result is not None else None
+        except HttpError:
+            # Temporary password: public pages still answer, as for a stranger.
+            user = None
         return user or self.ANONYMOUS
 
 

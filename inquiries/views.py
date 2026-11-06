@@ -38,7 +38,7 @@ from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
 from listings.views import published_listings
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import readable_organization, writable_organization
 
 from .models import Inquiry, InquiryMessage
 from .schemas import (
@@ -54,20 +54,6 @@ inquiries_router = Router(tags=["Inquiries"])
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def writable_organization(request) -> Organization:
-    """
-    The caller's organization, for an endpoint about to write an inquiry.
-
-    Sending one, and taking one on, both need `inquiries.manage`; reading the
-    inbox needs nothing beyond membership. The owner holds the code
-    implicitly, so a newly created organization can contact people before
-    anyone has configured anything.
-    """
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_INQUIRIES)
-    return organization
-
 
 # What an organization's history should show about an inquiry. The message
 # body is **not** here on purpose: it is already on the row, it never changes,
@@ -239,7 +225,7 @@ async def create_inquiry(request, data: InquiryCreateIn):
     carries both, because the provider needs to know who they would be dealing
     with *and* who to call.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_INQUIRIES)
     inquiry = await sync_to_async(_apply_create_inquiry)(request, organization, data)
     return 201, inquiry
 
@@ -345,7 +331,7 @@ async def mark_inquiry_read(request, inquiry_id: UUID):
     "someone saw this" into "Alisher has it". Scoped to the caller's inbox, so
     another organization's id is a 404 (§0.1).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_INQUIRIES)
     inquiry = await aget_object_or_404(
         received_inquiries(organization), public_id=inquiry_id
     )
@@ -452,7 +438,7 @@ async def send_inquiry_message(request, inquiry_id: UUID, data: InquiryMessageCr
     read receipts are out of scope here, same as the statuses this proposal
     also deferred.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_INQUIRIES)
     inquiry = await aget_object_or_404(
         party_inquiries(organization), public_id=inquiry_id
     )

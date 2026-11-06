@@ -21,14 +21,16 @@ from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from django.core.cache import cache
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.shortcuts import aget_object_or_404
 from django.utils import timezone
 from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
 
+from core.schemas import FiniteDecimal
 from equipment.models import Asset, Booking, EquipmentCategory, PricingRule
 from equipment.views import _category_q, _size_class_filter
+from listings.models import active_listings
 from users.models import Organization, Region, User
 
 from .public_schemas import PublicListingOut, PublicRegionListingsOut, PublicStatsOut
@@ -42,7 +44,7 @@ public_router = Router(tags=["Public"], auth=None)
 def _public_assets():
     """
     Base queryset for anything the public site can show: available machines
-    only, with everything a listing card needs already select/prefetched so
+    with an active listing (one never listed is not for rent), with everything a listing card needs already select/prefetched so
     the list endpoint doesn't N+1 per row.
     """
     today = timezone.localdate()
@@ -52,6 +54,7 @@ def _public_assets():
     )
     return (
         Asset.objects.filter(operational_status=Asset.OperationalStatus.AVAILABLE)
+        .filter(Exists(active_listings().filter(asset=OuterRef("pk"))))
         .select_related(
             "organization",
             "organization__region",
@@ -76,8 +79,8 @@ async def list_public_listings(
     category: str | None = None,
     region: str | None = None,
     manufacturer_id: UUID | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     is_self_propelled: bool | None = None,
 ):

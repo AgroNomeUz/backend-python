@@ -15,6 +15,7 @@ import zlib
 from datetime import timedelta
 from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.core.files import File
 from django.core.management.base import BaseCommand, CommandError
@@ -63,6 +64,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, regions=None, reset=False, **options):
+        if settings.ENVIRONMENT == "production":
+            raise CommandError("Demo accounts have a public password: not in production.")
         files = self._region_files(regions)
         region_data = [json.loads(path.read_text()) for path in files]
 

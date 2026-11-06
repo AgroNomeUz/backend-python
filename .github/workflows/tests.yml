@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: imresamu/postgis:16-3.5
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SECRET_KEY: ci-only
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASSWORD: ""
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev libproj-dev
+      - run: pip install pipenv && pipenv install --system --deploy
+      - run: python manage.py collectstatic --noinput
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py test --noinput

@@ -148,8 +148,12 @@ class OrgSignUpIn(Schema):
 
 
 class PasswordChangeIn(Schema):
-    current_password: str
+    """`current_password`, or `code` from `/auth/otp/request` for an account
+    that has no password yet, such as an owner who signed up by OTP."""
+
     new_password: str
+    current_password: str | None = None
+    code: str | None = None
 
 
 class TokenOut(Schema):

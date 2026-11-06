@@ -39,6 +39,13 @@ class OrgPermission(models.TextChoices):
     # Farms, fields, boundaries, seasons and crop zones: one code for the
     # whole farms domain.
     MANAGE_FARMS = "farms.manage", "Manage farms"
+    # Produce offers, purchase requests, quotes and handling orders.
+    MANAGE_MARKET = "market.manage", "Manage produce market"
+    # Separate from `market.manage`: answering today's order is routine, but
+    # signing binds the organization for months.
+    MANAGE_CONTRACTS = "contracts.manage", "Manage supply contracts"
+    # Moves the organization's money, including out of the platform.
+    MANAGE_BILLING = "billing.manage", "Manage billing"
 
     # Read access. Deals have no private read endpoint of their own (the
     # public profile lists them; an inquiry embeds its deal), so there is no
@@ -47,6 +54,9 @@ class OrgPermission(models.TextChoices):
     VIEW_USERS = "users.view", "View users"
     VIEW_INQUIRIES = "inquiries.view", "View inquiries"
     VIEW_FARMS = "farms.view", "View farms"
+    VIEW_MARKET = "market.view", "View produce market"
+    VIEW_CONTRACTS = "contracts.view", "View supply contracts"
+    VIEW_BILLING = "billing.view", "View billing"
     # The organization-wide change history (`GET /activity`). Separate from
     # the per-area codes because that feed names objects from every area.
     VIEW_ACTIVITY = "activity.view", "View activity log"
@@ -58,6 +68,9 @@ VIEW_IMPLIED_BY = {
     OrgPermission.VIEW_USERS.value: OrgPermission.MANAGE_USERS.value,
     OrgPermission.VIEW_INQUIRIES.value: OrgPermission.MANAGE_INQUIRIES.value,
     OrgPermission.VIEW_FARMS.value: OrgPermission.MANAGE_FARMS.value,
+    OrgPermission.VIEW_MARKET.value: OrgPermission.MANAGE_MARKET.value,
+    OrgPermission.VIEW_CONTRACTS.value: OrgPermission.MANAGE_CONTRACTS.value,
+    OrgPermission.VIEW_BILLING.value: OrgPermission.MANAGE_BILLING.value,
 }
 VIEW_PERMISSIONS = tuple(
     code.value for code in OrgPermission if code.value.endswith(".view")

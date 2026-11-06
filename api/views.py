@@ -15,15 +15,19 @@ from datetime import timedelta
 
 import jwt
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.contrib.auth import aauthenticate
 from django.contrib.auth.password_validation import validate_password
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import DataError, transaction
 from django.http import HttpResponse
 from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
+from billing.services import BillingError
+from billing.views import billing_router
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
 from core.views import activity_router
@@ -34,12 +38,17 @@ from farms.field_api import crop_zones_router, fields_router
 from favorites.views import favorites_router
 from inquiries.views import inquiries_router
 from listings.views import listings_router
+from marketplace.contract_api import contracts_router
+from marketplace.offer_api import catalog_router as market_catalog_router
+from marketplace.offer_api import offers_router
+from marketplace.order_api import disputes_router, orders_router
+from marketplace.request_api import quotes_router, requests_router
 from users.models import Organization, Region, User
 from users.organizations import organizations_router
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
-from users.services import normalize_phone, username_for_phone
+from users.services import is_uzbek_phone, normalize_phone, username_for_phone
 from users.iam import iam_router
-from users.views import members_router
+from users.views import members_router, revoke_sessions
 from .auth import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
     REFRESH_TOKEN_LIFETIME,
@@ -49,6 +58,7 @@ from .auth import (
     create_signup_token,
     decode_refresh_token,
     decode_signup_token,
+    login_failures_key,
 )
 from .cookies import (
     check_cookie_request,
@@ -57,7 +67,7 @@ from .cookies import (
     set_refresh_cookie,
     wants_cookie,
 )
-from .models import RefreshToken
+from .models import RefreshToken, hash_refresh_token
 from .otp import OtpInvalid, OtpThrottled, claim_signup_otp, issue_otp, verify_otp
 from .public import public_router
 from .regions import regions_router
@@ -104,6 +114,14 @@ api.add_router("/crop-zones", crop_zones_router)
 api.add_router("/organizations", organizations_router)
 api.add_router("/regions", regions_router)
 api.add_router("/stats", stats_router)
+api.add_router("/billing", billing_router)
+api.add_router("/market", market_catalog_router)
+api.add_router("/market/offers", offers_router)
+api.add_router("/market/requests", requests_router)
+api.add_router("/market/quotes", quotes_router)
+api.add_router("/market/orders", orders_router)
+api.add_router("/market/disputes", disputes_router)
+api.add_router("/market/contracts", contracts_router)
 # Deprecated, all three. `/public/listings`, `/public/regions` and
 # `/public/stats` predate the Listing model and still answer with their
 # original, asset-rooted payloads so the deployed frontend keeps working;
@@ -124,7 +142,7 @@ async def _new_token_pair(user: User, request, response: HttpResponse) -> dict:
     refresh = create_refresh_token(user.public_id)
     await RefreshToken.objects.acreate(
         user=user,
-        token=refresh,
+        token_hash=hash_refresh_token(refresh),
         expires_at=timezone.now() + REFRESH_TOKEN_LIFETIME,
     )
     if wants_cookie(request):
@@ -272,6 +290,8 @@ async def otp_request(request, data: OtpRequestIn):
     phone = normalize_phone(data.phone)
     if not phone:
         raise HttpError(400, "A phone number is required")
+    if not is_uzbek_phone(phone):
+        raise HttpError(400, "Enter a phone number like +998901234567")
 
     try:
         issued = await _issue_otp_async(phone, client_ip(request))
@@ -364,41 +384,62 @@ async def login(request, data: LoginIn, response: HttpResponse):
         if found is not None:
             identifier = found.username
 
+    failures_key = login_failures_key(identifier)
+    failures = await cache.aget(failures_key, 0)
+    if failures >= settings.LOGIN_MAX_FAILURES:
+        raise HttpError(429, "Too many failed attempts. Try again later, or use a code.")
+
     user = await aauthenticate(request, username=identifier, password=data.password)
     if user is None:
+        await cache.aset(failures_key, failures + 1, settings.LOGIN_LOCKOUT_SECONDS)
         raise HttpError(401, "Invalid credentials")
+    await cache.adelete(failures_key)
     if not user.is_active:
         raise HttpError(403, "Account is disabled")
 
     return await _issue_tokens(user, request, response, User.LoginMethod.PASSWORD)
 
 
-def _change_password(user: User, current_password: str, new_password: str) -> None:
+def _change_password(user: User, data: PasswordChangeIn) -> None:
     """
     Replace a user's password and invalidate every session built on the old one.
+
+    An account with no password has nothing to present, so a code sent to its
+    phone stands in: a session alone must not be enough to set one.
 
     Sync because it touches password hashing, the project's password
     validators and a bulk update — all of which want the ORM's sync path.
     """
-    if not user.check_password(current_password):
-        raise HttpError(400, "Current password is incorrect")
-    if current_password == new_password:
-        raise HttpError(400, "The new password must differ from the current one")
+    has_password = user.has_usable_password()
+    if has_password:
+        if not user.check_password(data.current_password):
+            raise HttpError(400, "Current password is incorrect")
+        if data.current_password == data.new_password:
+            raise HttpError(400, "The new password must differ from the current one")
+    elif not user.phone:
+        raise HttpError(400, "Your account has no phone number to confirm this with")
+    elif not data.code:
+        raise HttpError(400, "Enter the code sent to your phone")
 
     try:
-        validate_password(new_password, user)
+        validate_password(data.new_password, user)
     except ValidationError as exc:
         raise HttpError(400, " ".join(exc.messages))
 
+    # Last, so a rejected password does not spend the code.
+    if not has_password:
+        try:
+            verify_otp(user.phone, data.code)
+        except OtpInvalid as exc:
+            raise HttpError(400, str(exc))
+
     with transaction.atomic():
-        user.set_password(new_password)
+        user.set_password(data.new_password)
         # Clears the flag set when an admin issued a one-time password.
         user.must_change_password = False
         user.save(update_fields=["password", "must_change_password"])
         # The caller gets a fresh pair below; everything else is now stale.
-        RefreshToken.objects.filter(user=user, is_revoked=False).update(
-            is_revoked=True
-        )
+        revoke_sessions(user)
 
 
 _change_password_async = sync_to_async(_change_password)
@@ -410,11 +451,13 @@ async def change_password(request, data: PasswordChangeIn, response: HttpRespons
     Set your own password — the step that clears `must_change_password`.
 
     Employees added by an org admin sign in with a one-time password and land
-    here. All existing refresh tokens are revoked and a fresh pair is issued,
-    so other devices have to log in again.
+    here. An owner who signed up by OTP has no password yet, and presents a
+    `code` from `/auth/otp/request` instead of `current_password`. All existing
+    refresh tokens are revoked and a fresh pair is issued, so other devices
+    have to log in again.
     """
     user = request.auth
-    await _change_password_async(user, data.current_password, data.new_password)
+    await _change_password_async(user, data)
     return await _issue_tokens(user, request, response)
 
 
@@ -426,6 +469,28 @@ REFRESH_GRACE = timedelta(seconds=30)
 
 class RefreshRefused(Exception):
     """A cookie-borne refresh token was rejected: answer 401 and clear it."""
+
+
+@api.exception_handler(BillingError)
+def _billing_error(request, exc):
+    return api.create_response(request, {"detail": exc.message}, status=exc.status)
+
+
+@api.exception_handler(DataError)
+def _data_error(request, exc):
+    # A value Postgres cannot hold, e.g. an offset beyond bigint.
+    return api.create_response(request, {"detail": "A value is out of range."}, status=400)
+
+
+@api.exception_handler(ValueError)
+def _nul_in_input(request, exc):
+    # psycopg refuses NUL in text; the same ValueError type covers other bugs,
+    # so only that message is answered here.
+    if "NUL (0x00)" not in str(exc):
+        raise exc
+    return api.create_response(
+        request, {"detail": "Text cannot contain NUL characters."}, status=400
+    )
 
 
 @api.exception_handler(RefreshRefused)
@@ -475,7 +540,9 @@ async def token_refresh(request, response: HttpResponse, data: RefreshIn = None)
 
     try:
         stored = await (
-            RefreshToken.objects.select_related("user").aget(token=token)
+            RefreshToken.objects.select_related("user").aget(
+                token_hash=hash_refresh_token(token)
+            )
         )
     except RefreshToken.DoesNotExist:
         refuse("Refresh token not found or already revoked")
@@ -518,7 +585,7 @@ async def logout(request, response: HttpResponse, data: LogoutIn = None):
     token, from_cookie = _presented_refresh_token(request, data)
     if token:
         await RefreshToken.objects.filter(
-            user=request.auth, token=token, is_revoked=False
+            user=request.auth, token_hash=hash_refresh_token(token), is_revoked=False
         ).aupdate(is_revoked=True)
     if wants_cookie(request):
         clear_refresh_cookie(response)
