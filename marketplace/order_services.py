@@ -177,6 +177,13 @@ def _release_stock(order: Order) -> None:
         )
 
 
+def _check_same_order(existing: Order, offer_id: UUID, quantity: Decimal) -> None:
+    if existing.offer.public_id != offer_id:
+        raise HttpError(409, "That idempotency key was used for another offer.")
+    if existing.ordered_quantity != quantity:
+        raise HttpError(409, "That idempotency key was used for another quantity.")
+
+
 def place_order(
     actor: Actor,
     offer_id: UUID,
@@ -195,8 +202,7 @@ def place_order(
             customer_organization=customer, idempotency_key=idempotency_key
         ).first()
         if existing is not None:
-            if existing.offer.public_id != offer_id:
-                raise HttpError(409, "That idempotency key was used for another offer.")
+            _check_same_order(existing, offer_id, quantity)
             return existing
 
     offer = get_object_or_404(
@@ -265,9 +271,11 @@ def place_order(
         # Two taps with one key: the first won, and the rollback returned stock.
         if "order_customer_idempotency_unique" not in str(exc):
             raise
-        return Order.objects.get(
+        existing = Order.objects.get(
             customer_organization=customer, idempotency_key=idempotency_key
         )
+        _check_same_order(existing, offer_id, quantity)
+        return existing
     return order
 
 

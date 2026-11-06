@@ -263,6 +263,21 @@ class PlacingTests(MarketTestCase):
         response = self.place(self.make_offer(), idempotency_key="tap")
         self.assertEqual(response.status_code, 409)
 
+    def test_a_reused_key_for_another_quantity_is_refused(self):
+        offer = self.make_offer()
+        self.place(offer, idempotency_key="tap")
+        response = self.place(offer, idempotency_key="tap", quantity="120.000")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Order.objects.count(), 1)
+
+    def test_a_key_that_lost_the_race_is_checked_too(self):
+        offer = self.make_offer()
+        self.place(offer, idempotency_key="tap")
+        with mock.patch.object(Order.objects, "filter") as lookup:
+            lookup.return_value.first.return_value = None
+            response = self.place(offer, idempotency_key="tap", quantity="120.000")
+        self.assertEqual(response.status_code, 409)
+
     def test_placing_needs_the_permission(self):
         offer = self.make_offer()
         viewer = self.member(OrgPermission.VIEW_MARKET)
