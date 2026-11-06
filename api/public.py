@@ -27,6 +27,7 @@ from django.utils import timezone
 from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
 
+from core.schemas import FiniteDecimal
 from equipment.models import Asset, Booking, EquipmentCategory, PricingRule
 from equipment.views import _category_q, _size_class_filter
 from listings.models import active_listings
@@ -78,8 +79,8 @@ async def list_public_listings(
     category: str | None = None,
     region: str | None = None,
     manufacturer_id: UUID | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     is_self_propelled: bool | None = None,
 ):

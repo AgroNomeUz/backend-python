@@ -20,7 +20,7 @@ from django.contrib.auth import aauthenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import DataError, transaction
 from django.http import HttpResponse
 from django.utils import timezone
 from ninja import NinjaAPI
@@ -476,6 +476,23 @@ class RefreshRefused(Exception):
 @api.exception_handler(BillingError)
 def _billing_error(request, exc):
     return api.create_response(request, {"detail": exc.message}, status=exc.status)
+
+
+@api.exception_handler(DataError)
+def _data_error(request, exc):
+    # A value Postgres cannot hold, e.g. an offset beyond bigint.
+    return api.create_response(request, {"detail": "A value is out of range."}, status=400)
+
+
+@api.exception_handler(ValueError)
+def _nul_in_input(request, exc):
+    # psycopg refuses NUL in text; the same ValueError type covers other bugs,
+    # so only that message is answered here.
+    if "NUL (0x00)" not in str(exc):
+        raise exc
+    return api.create_response(
+        request, {"detail": "Text cannot contain NUL characters."}, status=400
+    )
 
 
 @api.exception_handler(RefreshRefused)

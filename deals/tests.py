@@ -452,6 +452,21 @@ class ReviewTests(DealTestCase):
         self.assertEqual(second.status_code, 409)
         self.assertEqual(Review.objects.filter(deal=self.deal).count(), 1)
 
+    def test_the_unique_review_constraint_is_a_409(self):
+        """The backstop for two parallel reviews: only the database sees the race."""
+        from django.db import IntegrityError, transaction
+
+        from deals.views import _integrity_error
+
+        Review.objects.create(
+            deal=self.deal, author_organization=self.buyer_org, rating=5, comment="a"
+        )
+        with self.assertRaises(IntegrityError) as caught, transaction.atomic():
+            Review.objects.create(
+                deal=self.deal, author_organization=self.buyer_org, rating=4, comment="b"
+            )
+        self.assertEqual(_integrity_error(caught.exception).status_code, 409)
+
     def test_reviewing_past_the_window_is_a_400(self):
         self.deal.completed_at = timezone.now() - timedelta(days=31)
         self.deal.save(update_fields=["completed_at"])

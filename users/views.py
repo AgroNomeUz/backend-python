@@ -361,6 +361,11 @@ def _apply_update_member(request, organization, member: User, data: MemberUpdate
     if not fields:
         return member
 
+    # Only `phone` is nullable; any other null reaches a NOT NULL column.
+    nulled = sorted(name for name, value in fields.items() if value is None and name != "phone")
+    if nulled:
+        raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
+
     if "phone" in fields:
         # The owner's number is the one credential staff must not be able to
         # move: phone is the OTP login identifier, so rewriting it to a number

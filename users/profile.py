@@ -416,6 +416,8 @@ def _apply_update_org(request, organization: Organization, data: OrganizationUpd
     # number isn't one, and two orgs may legitimately share a switchboard.
     if "phone" in fields and fields["phone"] != "":
         fields["phone"] = normalize_phone(fields["phone"])
+        if fields["phone"] is None:
+            raise HttpError(400, "Enter a valid phone number")
 
     if not fields:
         return organization

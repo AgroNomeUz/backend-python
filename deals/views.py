@@ -84,6 +84,8 @@ def _integrity_error(exc: IntegrityError) -> HttpError:
     message = str(exc)
     if "deal_one_per_inquiry" in message:
         return HttpError(409, "This inquiry already has a deal.")
+    if "deals_review_deal_id_key" in message:
+        return HttpError(409, "This deal has already been reviewed.")
     if "deal_not_own_org" in message:
         return HttpError(400, "An organization cannot deal with itself.")
     if "review_rating_range" in message:

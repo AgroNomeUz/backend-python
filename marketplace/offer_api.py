@@ -26,6 +26,7 @@ from ninja.pagination import LimitOffsetPagination, paginate
 from api.auth import OptionalJWTBearer, authenticated_user
 from core.audit import diff, log_activity
 from core.models import ActivityLog
+from core.schemas import FiniteDecimal
 from farms.models import CropZone
 from listings.views import _validate_image
 from users.models import OrgPermission, Organization, Region
@@ -160,8 +161,8 @@ async def list_offers(
     offer_type: str | None = None,
     grade: str | None = None,
     unit: str | None = None,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: FiniteDecimal | None = None,
+    max_price: FiniteDecimal | None = None,
     available_on: date | None = None,
     has_delivery: bool | None = None,
     verified_only: bool | None = None,

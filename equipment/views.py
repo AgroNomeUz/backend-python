@@ -37,7 +37,7 @@ from ninja.pagination import LimitOffsetPagination, paginate
 
 from core.audit import diff, log_activity, snapshot
 from core.models import ActivityLog
-from core.schemas import ActivityLogOut
+from core.schemas import ActivityLogOut, FiniteDecimal
 from core.views import org_activity
 from users.models import OrgPermission, Organization
 from users.permissions import readable_organization, writable_organization
@@ -145,8 +145,8 @@ async def list_equipment_models(
     category: str | None = None,
     is_self_propelled: bool | None = None,
     hitch_category: str | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     year: int | None = None,
 ):
@@ -340,6 +340,15 @@ def _apply_update_asset(request, organization, asset: Asset, data: AssetUpdateIn
     fields = data.dict(exclude_unset=True)
     if not fields:
         return asset
+
+    # Only these two columns are nullable; any other null reaches a NOT NULL one.
+    nulled = sorted(
+        name
+        for name, value in fields.items()
+        if value is None and name not in ("manufacture_year", "location")
+    )
+    if nulled:
+        raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
 
     Asset.objects.select_for_update().get(pk=asset.pk)
     asset = org_assets(organization).get(pk=asset.pk)

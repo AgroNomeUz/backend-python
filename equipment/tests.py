@@ -478,6 +478,19 @@ class AssetWriteTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_patch_asset_null_on_a_required_field_is_400(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        for name in ("current_meter_hours", "notes", "equipment_model_id"):
+            response = self.client.patch(
+                f"/api/v1/assets/{asset.public_id}",
+                data={name: None},
+                content_type="application/json",
+                **self.auth(),
+            )
+            self.assertEqual(response.status_code, 400, name)
+
     def test_patch_asset_records_a_status_change(self):
         asset = Asset.objects.create(
             organization=self.org, equipment_model=self.equipment_model

@@ -44,6 +44,7 @@ from ninja.pagination import LimitOffsetPagination, paginate
 from api.auth import OptionalJWTBearer, authenticated_user
 from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
+from core.schemas import FiniteDecimal
 from equipment.models import Asset
 from equipment.views import _category_q, _size_class_filter
 from users.models import OrgPermission, Organization, Region
@@ -169,14 +170,14 @@ async def list_listings(
     listing_type: str | None = None,
     region: str | None = None,
     manufacturer_id: UUID | None = None,
-    min_power_kw: float | None = None,
-    max_power_kw: float | None = None,
+    min_power_kw: FiniteDecimal | None = None,
+    max_power_kw: FiniteDecimal | None = None,
     size_class: str | None = None,
     is_self_propelled: bool | None = None,
     has_operator: bool | None = None,
     has_delivery: bool | None = None,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: FiniteDecimal | None = None,
+    max_price: FiniteDecimal | None = None,
     verified_only: bool | None = None,
     owner: UUID | None = None,
     sort: str | None = None,
