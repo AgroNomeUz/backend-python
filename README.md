@@ -230,7 +230,8 @@ default and both refuse to run when `ENVIRONMENT=production`:
 
 The limits around it are real — a 60s resend cooldown, hourly caps per number
 and per IP, and 5 attempts per code, all counted off the `api.PhoneOtp` table
-(tunable in `settings.py`).
+(tunable in `settings.py`). `/auth/login` and `/admin/login/` share one counter
+per username: 5 wrong passwords lock both for 15 minutes.
 
 Refresh tokens are stored as SHA-256 digests in `api.RefreshToken.token_hash`,
 so a database dump opens no sessions. The client still sends the raw JWT.

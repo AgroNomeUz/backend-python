@@ -22,6 +22,13 @@ TEMPORARY_PASSWORD_PATHS = (
 )
 
 
+def login_failures_key(username: str) -> str:
+    """The wrong-password counter `/auth/login` and `/admin` share."""
+    # shortcut: the default cache is per process, so the real limit is this
+    # times the worker count. Move it to a shared store if that stops being enough.
+    return f"login-failures:{username}"
+
+
 def _signup_token_lifetime() -> timedelta:
     return timedelta(seconds=settings.SIGNUP_TOKEN_TTL_SECONDS)
 

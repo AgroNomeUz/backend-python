@@ -58,6 +58,7 @@ from .auth import (
     create_signup_token,
     decode_refresh_token,
     decode_signup_token,
+    login_failures_key,
 )
 from .cookies import (
     check_cookie_request,
@@ -383,9 +384,7 @@ async def login(request, data: LoginIn, response: HttpResponse):
         if found is not None:
             identifier = found.username
 
-    # shortcut: the default cache is per process, so the real limit is this
-    # times the worker count. Move it to a shared store if that stops being enough.
-    failures_key = f"login-failures:{identifier}"
+    failures_key = login_failures_key(identifier)
     failures = await cache.aget(failures_key, 0)
     if failures >= settings.LOGIN_MAX_FAILURES:
         raise HttpError(429, "Too many failed attempts. Try again later, or use a code.")

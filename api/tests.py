@@ -856,6 +856,55 @@ class LoginLimitTests(AuthTestCase):
         self.assertEqual(self.login("sekret-password-1").status_code, 200)
 
 
+@override_settings(LOGIN_MAX_FAILURES=3)
+class AdminLoginLimitTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        User.objects.create_superuser(username="boss", password="sekret-password-1")
+
+    def admin_login(self, password):
+        return self.client.post(
+            "/admin/login/", {"username": "boss", "password": password}
+        )
+
+    def api_login(self, password):
+        return self.post("login", {"username": "boss", "password": password})
+
+    def test_guessing_stops_even_for_the_right_password(self):
+        for _ in range(3):
+            self.assertEqual(self.admin_login("wrong").status_code, 200)
+
+        locked = self.admin_login("sekret-password-1")
+
+        self.assertEqual(locked.status_code, 200)
+        self.assertContains(locked, "Too many failed attempts")
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_the_count_is_shared_with_the_api_login(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.api_login("wrong").status_code, 401)
+        self.assertEqual(self.api_login("sekret-password-1").status_code, 429)
+
+    def test_a_success_clears_the_count(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.admin_login("sekret-password-1").status_code, 302)
+        self.client.logout()
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.assertEqual(self.admin_login("sekret-password-1").status_code, 302)
+
+    def test_a_blank_password_does_not_clear_the_count(self):
+        self.admin_login("wrong")
+        self.admin_login("wrong")
+        self.admin_login("")
+        self.admin_login("wrong")
+        self.assertContains(self.admin_login("sekret-password-1"), "Too many failed")
+
+
 class TemporaryPasswordTests(AuthTestCase):
     def setUp(self):
         super().setUp()

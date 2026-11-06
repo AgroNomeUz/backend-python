@@ -260,7 +260,7 @@ OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
 # Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
 SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
 
-# Wrong passwords allowed per account before /auth/login answers 429.
+# Wrong passwords allowed per account, across /auth/login and /admin.
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 15 * 60
 
