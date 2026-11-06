@@ -63,6 +63,15 @@ GATED = {
         f"crop-zones/{MISSING}",
         f"crop-zones/{MISSING}/activity",
     ],
+    P.VIEW_BILLING: [
+        "billing/wallet",
+        "billing/wallet/entries",
+        "billing/payments",
+        f"billing/payments/{MISSING}",
+        "billing/payout-destinations",
+        "billing/payouts",
+        f"billing/payouts/{MISSING}",
+    ],
     P.VIEW_ACTIVITY: ["activity"],
 }
 
@@ -71,6 +80,7 @@ MANAGE_FOR = {
     P.VIEW_USERS: P.MANAGE_USERS,
     P.VIEW_INQUIRIES: P.MANAGE_INQUIRIES,
     P.VIEW_FARMS: P.MANAGE_FARMS,
+    P.VIEW_BILLING: P.MANAGE_BILLING,
 }
 
 
@@ -200,8 +210,9 @@ class ViewPermissionTests(TestCase):
         User.objects.filter(pk=old.pk).update(permissions=["equipment.manage"])
         migration.grant_views_to_existing_members(apps, None)
         old.refresh_from_db()
+        # The migration's own frozen list: codes added since must not appear.
         self.assertEqual(
-            old.permissions, sorted(["equipment.manage", *VIEW_PERMISSIONS])
+            old.permissions, sorted(["equipment.manage", *migration.VIEW_CODES])
         )
         self.owner.refresh_from_db()
         self.assertEqual(self.owner.permissions, [])
