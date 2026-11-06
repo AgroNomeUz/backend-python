@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
+from decimal import Decimal
 from pathlib import Path
 import os
 
@@ -56,6 +57,8 @@ INSTALLED_APPS = [
     'inquiries.apps.InquiriesConfig',
     'favorites.apps.FavoritesConfig',
     'deals.apps.DealsConfig',
+    'billing.apps.BillingConfig',
+    'marketplace.apps.MarketplaceConfig',
 ]
 
 MIDDLEWARE = [
@@ -96,7 +99,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 # anyone holding the URL. Add a name here only when everything that can ever
 # land in it is meant to be world-readable; anything else needs a
 # permission-checked endpoint instead.
-PUBLIC_MEDIA_DIRS = ["listings"]
+PUBLIC_MEDIA_DIRS = ["listings", "offers"]
 
 # Listing image limits, enforced in listings/views.py before anything is
 # written to disk.
@@ -268,6 +271,34 @@ OTP_ECHO_CODES = (
     os.environ.get('OTP_ECHO_CODES', 'False').lower() in ('true', '1', 'yes')
     and ENVIRONMENT != 'production'
 )
+
+# Money (billing/). UZS only for now, and never client-supplied.
+BILLING_CURRENCY = "UZS"
+# Which class in billing/gateway.py talks to the payment provider. The only
+# one so far is the mock.
+BILLING_GATEWAY = os.environ.get("BILLING_GATEWAY", "mock")
+# The mock lets a caller declare a payment succeeded, which is minting money.
+# Never available in production, whatever the environment says otherwise.
+BILLING_MOCK_ENABLED = ENVIRONMENT != "production"
+# Placeholders until provider fees are known — see docs/produce-marketplace.md.
+# Charged to the seller on the value released to them.
+BILLING_COMMISSION_RATE = Decimal(os.environ.get("BILLING_COMMISSION_RATE", "0.015"))
+BILLING_CONTRACT_COMMISSION_RATE = Decimal(
+    os.environ.get("BILLING_CONTRACT_COMMISSION_RATE", "0.01")
+)
+# How long a new payout destination waits before it can receive money.
+BILLING_PAYOUT_COOLDOWN_HOURS = int(os.environ.get("BILLING_PAYOUT_COOLDOWN_HOURS", "24"))
+
+# The produce market (marketplace/). Deliveries are planned in local dates, so
+# "today" has to mean today in Tashkent rather than in TIME_ZONE (UTC), where
+# the date is wrong until 05:00.
+MARKET_TIME_ZONE = "Asia/Tashkent"
+ORDER_CONFIRM_HOURS = 6
+ORDER_PAYMENT_HOURS = 6
+# How long a buyer has to inspect a delivery before it is accepted for them.
+ORDER_ACCEPTANCE_HOURS = 6
+# How far ahead contract deliveries are turned into orders.
+CONTRACT_GENERATION_HORIZON_DAYS = 3
 
 # The mocked gateway reports undelivered messages at WARNING, which Django's
 # defaults would route to the console anyway; this pins the level so the

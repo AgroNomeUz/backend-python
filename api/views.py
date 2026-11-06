@@ -24,6 +24,7 @@ from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
+from billing.views import billing_router
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
 from core.views import activity_router
@@ -104,6 +105,7 @@ api.add_router("/crop-zones", crop_zones_router)
 api.add_router("/organizations", organizations_router)
 api.add_router("/regions", regions_router)
 api.add_router("/stats", stats_router)
+api.add_router("/billing", billing_router)
 # Deprecated, all three. `/public/listings`, `/public/regions` and
 # `/public/stats` predate the Listing model and still answer with their
 # original, asset-rooted payloads so the deployed frontend keeps working;

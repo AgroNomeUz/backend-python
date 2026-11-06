@@ -60,6 +60,18 @@ PRESETS: tuple[Preset, ...] = (
         tuple(sorted((P.MANAGE_EQUIPMENT.value, P.MANAGE_INQUIRIES.value, *ALL_VIEW))),
     ),
     Preset(
+        "market_manager",
+        "Market Manager",
+        "Publishes produce offers, sends quotes and handles orders.",
+        tuple(sorted((P.MANAGE_MARKET.value, *ALL_VIEW))),
+    ),
+    Preset(
+        "finance",
+        "Finance",
+        "Pays for orders and manages the wallet and withdrawals.",
+        tuple(sorted((P.MANAGE_BILLING.value, *ALL_VIEW))),
+    ),
+    Preset(
         "viewer",
         "Viewer",
         "Sees everything, changes nothing. For accountants and observers.",
