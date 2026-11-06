@@ -548,6 +548,11 @@ class ContractCreateIn(ContractTermsIn):
     unit_price: MoneyIn | None = None
 
 
+class ContractAnswerIn(Schema):
+    # The `pending_terms.version` the caller read. Anything else is a 409.
+    version: int
+
+
 class ContractTerminateIn(Schema):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 

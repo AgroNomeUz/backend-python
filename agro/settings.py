@@ -144,9 +144,10 @@ AUTH_REFRESH_COOKIE_PATH = "/api/v1/auth/"
 # Lax is enough: console → api is same-site, and the cookie is only honoured
 # alongside a custom header (no simple cross-site request can carry one).
 AUTH_REFRESH_COOKIE_SAMESITE = "Lax"
-AUTH_REFRESH_COOKIE_SECURE = os.environ.get(
-    "AUTH_REFRESH_COOKIE_SECURE",
-    "true" if ENVIRONMENT == "production" else "false",
+# `or`, not a default: .env.example leaves this blank, and blank must not mean off.
+AUTH_REFRESH_COOKIE_SECURE = (
+    os.environ.get("AUTH_REFRESH_COOKIE_SECURE")
+    or ("true" if ENVIRONMENT == "production" else "false")
 ).lower() in ("true", "1", "yes")
 
 CSRF_TRUSTED_ORIGINS = [

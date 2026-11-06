@@ -24,7 +24,8 @@ from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import F, Sum
+from django.db.models import F, Sum, Value
+from django.db.models.functions import Least
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from ninja.errors import HttpError
@@ -37,6 +38,8 @@ from deals.services import record_completed_sale, renew_completed_sale
 from users.models import Organization, User
 
 from .models import (
+    QUANTITY_DECIMAL_PLACES,
+    QUANTITY_MAX_DIGITS,
     DeliveryMethod,
     Offer,
     Order,
@@ -49,10 +52,14 @@ from .models import (
     SupplyContract,
     active_offer_q,
     market_today,
+    quantity_field,
 )
 
 ORDER_REFERENCE = "marketplace.order"
 MONEY_LIMIT = Decimal(10) ** (MONEY_MAX_DIGITS - MONEY_DECIMAL_PLACES)
+MAX_QUANTITY = Decimal(10) ** (QUANTITY_MAX_DIGITS - QUANTITY_DECIMAL_PLACES) - (
+    Decimal(10) ** -QUANTITY_DECIMAL_PLACES
+)
 Status = Order.Status
 
 
@@ -171,9 +178,13 @@ def reserve_stock(offer_id: int, quantity: Decimal) -> bool:
 
 
 def _release_stock(order: Order) -> None:
+    """Capped: stock can sit at the column's limit, and an overflow here would undo a refund."""
     if order.offer_id:
         Offer.objects.filter(pk=order.offer_id).update(
-            quantity_available=F("quantity_available") + order.quantity
+            quantity_available=Least(
+                F("quantity_available") + order.quantity,
+                Value(MAX_QUANTITY, output_field=quantity_field()),
+            )
         )
 
 
@@ -556,6 +567,12 @@ def pay_through_gateway(actor: Actor, order: Order) -> Payment:
         user=actor.user,
         reference_type=ORDER_REFERENCE,
         reference_id=order.public_id,
+        on_created=lambda payment: audit(
+            actor,
+            payment,
+            ActivityLog.Action.CREATED,
+            {"amount": {"from": None, "to": str(payment.amount)}},
+        ),
     )
 
 

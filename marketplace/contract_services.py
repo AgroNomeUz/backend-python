@@ -200,9 +200,15 @@ def amend_contract(actor: Actor, contract: SupplyContract, terms: dict) -> Contr
     return version
 
 
-def accept_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
+def _require_version_read(terms: ContractTerms, version: int) -> None:
+    """The proposer can replace their terms at any moment, even mid-answer."""
+    if terms.version != version:
+        raise HttpError(409, "These terms have changed. Read the new version before answering.")
+
+
+def accept_terms(actor: Actor, contract: SupplyContract, version: int) -> SupplyContract:
     """
-    Sign. The first accepted version is what makes a contract active.
+    Sign `version`. The first accepted version is what makes a contract active.
 
     Orders are brought into line after the commit, not inside it. See
     `sync_orders_with_terms`.
@@ -214,6 +220,7 @@ def accept_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
             raise HttpError(409, "Nothing is waiting to be accepted.")
         if terms.proposed_by_side == actor.side:
             raise HttpError(403, "The other side has to accept what you proposed.")
+        _require_version_read(terms, version)
 
         now = timezone.now()
         terms.status = TermsStatus.ACCEPTED
@@ -241,7 +248,7 @@ def accept_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
 
 
 @transaction.atomic
-def reject_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
+def reject_terms(actor: Actor, contract: SupplyContract, version: int) -> SupplyContract:
     """Say no. Before signing that ends it; after, the current terms simply stand."""
     contract = _locked(contract)
     terms = pending_terms(contract)
@@ -249,6 +256,7 @@ def reject_terms(actor: Actor, contract: SupplyContract) -> SupplyContract:
         raise HttpError(409, "Nothing is waiting for an answer.")
     if terms.proposed_by_side == actor.side:
         raise HttpError(403, "You proposed this. Propose something else to replace it.")
+    _require_version_read(terms, version)
 
     terms.status = TermsStatus.REJECTED
     terms.decided_by = actor.user

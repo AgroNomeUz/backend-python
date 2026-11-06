@@ -22,6 +22,7 @@ from .models import Offer, Quote, Side, SupplyContract, active_offer_q
 from .order_api import order_relations
 from .order_services import Actor
 from .schemas import (
+    ContractAnswerIn,
     ContractCreateIn,
     ContractDetailOut,
     ContractOut,
@@ -135,15 +136,15 @@ async def _write(request, contract_id: UUID, operation, *args) -> SupplyContract
 
 
 @contracts_router.post("/{contract_id}/accept", response=ContractDetailOut)
-async def accept_contract(request, contract_id: UUID):
-    """Sign the version waiting for an answer. You cannot accept your own proposal."""
-    return await _write(request, contract_id, services.accept_terms)
+async def accept_contract(request, contract_id: UUID, data: ContractAnswerIn):
+    """Sign the version you read. You cannot accept your own proposal."""
+    return await _write(request, contract_id, services.accept_terms, data.version)
 
 
 @contracts_router.post("/{contract_id}/reject", response=ContractDetailOut)
-async def reject_contract(request, contract_id: UUID):
-    """Refuse the version waiting for an answer. An active contract carries on."""
-    return await _write(request, contract_id, services.reject_terms)
+async def reject_contract(request, contract_id: UUID, data: ContractAnswerIn):
+    """Refuse the version you read. An active contract carries on."""
+    return await _write(request, contract_id, services.reject_terms, data.version)
 
 
 @contracts_router.post("/{contract_id}/amend", response=ContractDetailOut)

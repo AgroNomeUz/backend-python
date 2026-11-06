@@ -42,6 +42,7 @@ from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
 
 PHONE = "+998901112233"
+ATTACKER_PHONE = "+998907778899"
 
 
 def make_org(slug: str, region: Region, phone: str | None = None) -> tuple[Organization, User]:
@@ -586,7 +587,12 @@ class SettingsFileTests(SimpleTestCase):
     def settings_with(self, **env):
         clean = {"SECRET_KEY": "x", **env}
         with mock.patch.dict(os.environ, clean):
-            for name in ("ALLOWED_HOSTS", "BILLING_MOCK_ENABLED", "ENVIRONMENT"):
+            for name in (
+                "ALLOWED_HOSTS",
+                "AUTH_REFRESH_COOKIE_SECURE",
+                "BILLING_MOCK_ENABLED",
+                "ENVIRONMENT",
+            ):
                 if name not in env:
                     os.environ.pop(name, None)
             return runpy.run_path(str(django_settings.BASE_DIR / "agro/settings.py"))
@@ -618,6 +624,13 @@ class SettingsFileTests(SimpleTestCase):
             ALLOWED_HOSTS="api.agronome.uz, agronome.uz ,", ENVIRONMENT="production"
         )
         self.assertEqual(loaded["ALLOWED_HOSTS"], ["api.agronome.uz", "agronome.uz"])
+
+    def test_a_blank_refresh_cookie_setting_keeps_the_default(self):
+        production = {"ALLOWED_HOSTS": "api.agronome.uz", "ENVIRONMENT": "production"}
+        secure = "AUTH_REFRESH_COOKIE_SECURE"
+        self.assertTrue(self.settings_with(**production, **{secure: ""})[secure])
+        self.assertFalse(self.settings_with(**production, **{secure: "false"})[secure])
+        self.assertFalse(self.settings_with(**{secure: ""})[secure])
 
     def test_production_with_no_hosts_stops_the_process(self):
         with self.assertRaises(ImproperlyConfigured):
@@ -714,8 +727,8 @@ class WalletApiTests(BillingTestCase):
 class PayoutTests(BillingTestCase):
     ACCOUNT = "20208000123456789012"
 
-    def add_destination(self, code="000000", account=None):
-        self.post("payout-destinations/code")
+    def add_destination(self, code="000000", account=None, user=None):
+        self.post("payout-destinations/code", user=user)
         return self.post(
             "payout-destinations",
             {
@@ -725,6 +738,7 @@ class PayoutTests(BillingTestCase):
                 "account_number": account or self.ACCOUNT,
                 "code": code,
             },
+            user,
         )
 
     def ready_destination(self) -> PayoutDestination:
@@ -752,6 +766,25 @@ class PayoutTests(BillingTestCase):
 
     def test_adding_an_account_needs_a_correct_code(self):
         self.assertEqual(self.add_destination(code="999999").status_code, 400)
+        self.assertFalse(PayoutDestination.objects.exists())
+
+    def clerk(self, phone):
+        return User.objects.create_user(
+            username="clerk",
+            organization=self.buyer,
+            permissions=[OrgPermission.MANAGE_BILLING.value],
+            phone=phone,
+        )
+
+    def test_a_member_confirms_with_the_owners_code(self):
+        response = self.add_destination(user=self.clerk(ATTACKER_PHONE))
+        self.assertEqual(response.status_code, 201, response.content)
+
+    @override_settings(OTP_TEST_PHONES=[ATTACKER_PHONE])
+    def test_a_members_own_phone_cannot_confirm_an_account(self):
+        """A stolen admin session can create a member with any phone it likes."""
+        response = self.add_destination(user=self.clerk(ATTACKER_PHONE))
+        self.assertEqual(response.status_code, 400)
         self.assertFalse(PayoutDestination.objects.exists())
 
     def test_adding_an_account_without_a_phone_is_refused(self):

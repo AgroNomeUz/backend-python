@@ -373,7 +373,7 @@ an order and a contract work.
 | `/api/v1/market/orders/{id}/cancel` | POST | `market.manage` | Either side, before dispatch |
 | `/api/v1/market/disputes`, `/{order_id}/resolve` | GET, POST | Platform staff | The arbitration queue |
 | `/api/v1/market/contracts` | GET, POST | `contracts.view`, `contracts.manage` | The buyer proposes from an offer or a quote |
-| `/api/v1/market/contracts/{id}/accept`, `reject`, `amend`, `terminate` | POST | `contracts.manage` | Only the side that did not propose can accept |
+| `/api/v1/market/contracts/{id}/accept`, `reject`, `amend`, `terminate` | POST | `contracts.manage` | Only the side that did not propose can accept. `accept` and `reject` send the `version` they read, and a replaced version is a 409 |
 | `/api/v1/market/contracts/{id}/orders` | GET | `contracts.view` | Its deliveries |
 
 ### Billing
@@ -383,7 +383,7 @@ an order and a contract work.
 | `/api/v1/billing/wallet`, `/wallet/entries` | GET | `billing.view` | Balance, money held in open orders, and the statement |
 | `/api/v1/billing/top-ups` | POST | `billing.manage` | Add money; the buyer finishes at `checkout_url` |
 | `/api/v1/billing/payments` | GET | `billing.view` | Money that came in |
-| `/api/v1/billing/payout-destinations` | GET, POST, DELETE | `billing.view`, `billing.manage` | Accounts to withdraw to. Adding one needs a code from `POST /payout-destinations/code` and then waits out a cooling-off period |
+| `/api/v1/billing/payout-destinations` | GET, POST, DELETE | `billing.view`, `billing.manage` | Accounts to withdraw to. Adding one needs the code `POST /payout-destinations/code` texts to the organization owner, and then waits out a cooling-off period |
 | `/api/v1/billing/payouts` | GET, POST | `billing.view`, `billing.manage` | Withdrawals |
 | `/api/v1/billing/webhooks/{provider}` | POST | Signed | Provider events |
 | `/api/v1/billing/payments/{id}/mock-complete`, `/payouts/{id}/mock-complete` | POST | `billing.manage` | **Development only.** Stand in for the provider, and 404 in production |

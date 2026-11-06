@@ -122,6 +122,8 @@ Otherwise a seller could be paid days before anything was due.
 
 `SupplyContract` holds the parties; `ContractTerms` holds one immutable version
 of what was agreed. Either side proposes, and **only the other side can accept**.
+An answer names the version it read, so a proposal replaced at the last moment
+is a 409 rather than a signature.
 After signing, a change is a new version that also needs the other side, and
 it applies only to deliveries on or after its `start_date`.
 
@@ -161,8 +163,9 @@ by deploying this. Nobody can grant a code they lack, or take over the account
 of someone who holds one. Adding a payout destination also needs a one-time code, and a
 new destination cannot receive money for `BILLING_PAYOUT_COOLDOWN_HOURS`,
 because a changed payout account is the classic way to steal a seller's money.
-That code goes to the account's phone, which moves only with proof of the old
-number, so a stolen session cannot redirect it.
+That code goes to the organization owner's phone, whoever is adding the account.
+Staff cannot move that number and the owner moves it only with proof of the old
+one, so a stolen session of any rank cannot redirect it.
 
 ## Not built yet
 

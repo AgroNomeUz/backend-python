@@ -327,6 +327,15 @@ class TheSellersAnswerTests(MarketTestCase):
 
 
 class PayingTests(MarketTestCase):
+    def test_opening_a_checkout_is_audited(self):
+        order = self.order_at("awaiting_payment")
+        self.post(path(order, "pay"), {"method": "gateway"})
+        payment = Payment.objects.get(reference_id=order.public_id)
+        row = ActivityLog.objects.get(object_id=payment.pk, action="created")
+        self.assertEqual(row.organization, self.buyer)
+        self.assertEqual(row.actor, self.buyer_owner)
+        self.assertEqual(row.changes["amount"]["to"], "800000.00")
+
     def test_an_empty_wallet_cannot_pay(self):
         order = self.order_at("awaiting_payment")
         fund(self.buyer, "799999.99")
@@ -433,6 +442,17 @@ class PayingTests(MarketTestCase):
 
 
 class CancellingTests(MarketTestCase):
+    def test_a_refund_survives_stock_at_the_columns_limit(self):
+        limit = Decimal("999999999.999")
+        offer = self.make_offer()
+        order = self.order_at("paid", offer=offer)
+        Offer.objects.filter(pk=offer.pk).update(quantity_available=limit)
+        response = self.post(path(order, "cancel"), {"reason": "Plans changed"})
+        self.assertEqual(response.json()["status"], "cancelled", response.content)
+        self.assertEqual(billing.wallet_balance(self.buyer), Decimal("800000.00"))
+        offer.refresh_from_db()
+        self.assertEqual(offer.quantity_available, limit)
+
     def test_a_paid_order_is_refunded_in_full(self):
         offer = self.make_offer()
         order = self.order_at("paid", offer=offer)
@@ -1084,7 +1104,9 @@ class ConcurrencyTests(TransactionTestCase):
                 "notice_days": 0,
             },
         )
-        return contract_services.accept_terms(self.seller_actor, contract)
+        return contract_services.accept_terms(
+            self.seller_actor, contract, contract_services.pending_terms(contract).version
+        )
 
     def dispatched_deliveries(self, contract, count=2):
         fund(self.buyer, "10000.00")

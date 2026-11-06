@@ -155,15 +155,25 @@ async def mock_complete_payment(request, payment_id: UUID, data: MockCompleteIn)
 
 # ── payout destinations ──────────────────────────────────────────────────────
 
+def _owner_phone(organization) -> str:
+    """
+    Where a payout code goes, whoever is asking. Staff can set a member's phone,
+    so a member's code proves nothing. Staff cannot move the owner's, and the
+    owner moves it only with proof of the old number.
+    """
+    phone = organization.owner.phone
+    if not phone:
+        raise HttpError(400, "The organization owner has no phone number to confirm this with")
+    return phone
+
+
 @billing_router.post(
     "/payout-destinations/code", response={200: CodeSentOut, 429: OtpThrottledOut}
 )
 async def send_destination_code(request):
-    """Text a code to the caller. Adding a payout account has to present it."""
-    writable_organization(request, OrgPermission.MANAGE_BILLING)
-    phone = request.auth.phone
-    if not phone:
-        raise HttpError(400, "Your account has no phone number to confirm this with")
+    """Text a code to the owner. Adding a payout account has to present it."""
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
+    phone = await sync_to_async(_owner_phone)(organization)
     try:
         issued = await sync_to_async(issue_otp)(phone, client_ip(request))
     except OtpThrottled as exc:
@@ -172,11 +182,8 @@ async def send_destination_code(request):
 
 
 def _apply_add_destination(request, organization, data: DestinationCreateIn):
-    phone = request.auth.phone
-    if not phone:
-        raise HttpError(400, "Your account has no phone number to confirm this with")
     try:
-        verify_otp(phone, data.code)
+        verify_otp(_owner_phone(organization), data.code)
     except OtpInvalid as exc:
         raise HttpError(400, str(exc))
     return services.add_destination(

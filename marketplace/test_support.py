@@ -189,7 +189,7 @@ class MarketTestCase(TestCase):
         self.assertEqual(response.status_code, 201, response.content)
         contract_id = response.json()["id"]
         accepted = self.post(
-            f"market/contracts/{contract_id}/accept", user=self.seller_owner
+            f"market/contracts/{contract_id}/accept", {"version": 1}, self.seller_owner
         )
         self.assertEqual(accepted.status_code, 200, accepted.content)
         return SupplyContract.objects.get(public_id=contract_id)

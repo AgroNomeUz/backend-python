@@ -31,6 +31,12 @@ def contract_path(contract, action="") -> str:
     return f"market/contracts/{contract.public_id}" + (f"/{action}" if action else "")
 
 
+def answer(contract) -> dict:
+    """What a client sends: the version it read."""
+    pending = services.pending_terms(contract)
+    return {"version": pending.version if pending else 1}
+
+
 def order_path(order, action="") -> str:
     return f"market/orders/{order.public_id}" + (f"/{action}" if action else "")
 
@@ -226,7 +232,7 @@ class SigningTests(MarketTestCase):
 
     def test_the_other_side_accepts_and_deliveries_appear(self):
         contract = self.proposed()
-        body = self.post(contract_path(contract, "accept"), user=self.seller_owner).json()
+        body = self.post(contract_path(contract, "accept"), answer(contract), user=self.seller_owner).json()
         self.assertEqual(body["status"], "active")
         self.assertEqual(body["current_terms"]["version"], 1)
         self.assertIsNone(body["pending_terms"])
@@ -238,23 +244,42 @@ class SigningTests(MarketTestCase):
 
     def test_you_cannot_sign_your_own_proposal(self):
         contract = self.proposed()
-        self.assertEqual(self.post(contract_path(contract, "accept")).status_code, 403)
-        self.assertEqual(self.post(contract_path(contract, "reject")).status_code, 403)
+        self.assertEqual(self.post(contract_path(contract, "accept"), answer(contract)).status_code, 403)
+        self.assertEqual(self.post(contract_path(contract, "reject"), answer(contract)).status_code, 403)
         contract.refresh_from_db()
         self.assertEqual(contract.status, SupplyContract.Status.PROPOSED)
 
     def test_an_outsider_cannot_touch_it(self):
         contract = self.proposed()
         path = contract_path(contract, "accept")
-        self.assertEqual(self.post(path, user=self.outsider_owner).status_code, 404)
+        self.assertEqual(self.post(path, answer(contract), self.outsider_owner).status_code, 404)
         self.assertEqual(self.get(contract_path(contract), self.outsider_owner).status_code, 404)
+
+    def test_an_answer_only_binds_the_version_that_was_read(self):
+        contract = self.proposed()
+        read = answer(contract)
+        self.post(contract_path(contract, "amend"), self.contract_terms(unit_price="9000.00"))
+        for action in ("accept", "reject"):
+            response = self.post(contract_path(contract, action), read, self.seller_owner)
+            self.assertEqual(response.status_code, 409, response.content)
+        contract.refresh_from_db()
+        self.assertEqual(contract.status, SupplyContract.Status.PROPOSED)
+        self.assertEqual(services.pending_terms(contract).version, 2)
+
+        response = self.post(contract_path(contract, "accept"), answer(contract), self.seller_owner)
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_an_answer_has_to_name_a_version(self):
+        contract = self.proposed()
+        response = self.post(contract_path(contract, "accept"), user=self.seller_owner)
+        self.assertEqual(response.status_code, 422)
 
     def test_rejecting_ends_a_proposal(self):
         contract = self.proposed()
-        body = self.post(contract_path(contract, "reject"), user=self.seller_owner).json()
+        body = self.post(contract_path(contract, "reject"), answer(contract), user=self.seller_owner).json()
         self.assertEqual(body["status"], "rejected")
         self.assertEqual(
-            self.post(contract_path(contract, "accept"), user=self.seller_owner).status_code,
+            self.post(contract_path(contract, "accept"), answer(contract), user=self.seller_owner).status_code,
             409,
         )
 
@@ -268,10 +293,10 @@ class SigningTests(MarketTestCase):
         self.assertEqual(counter["pending_terms"]["version"], 2)
         self.assertEqual(counter["pending_terms"]["proposed_by_side"], "provider")
         self.assertEqual(
-            self.post(contract_path(contract, "accept"), user=self.seller_owner).status_code,
+            self.post(contract_path(contract, "accept"), answer(contract), user=self.seller_owner).status_code,
             403,
         )
-        body = self.post(contract_path(contract, "accept")).json()
+        body = self.post(contract_path(contract, "accept"), answer(contract)).json()
         self.assertEqual(body["status"], "active")
         self.assertEqual(Decimal(body["current_terms"]["unit_price"]), Decimal("9000.00"))
         statuses = {row["version"]: row["status"] for row in body and self.get(contract_path(contract)).json()["versions"]}
@@ -280,15 +305,15 @@ class SigningTests(MarketTestCase):
     def test_signing_needs_the_permission(self):
         contract = self.proposed()
         market = self.member(OrgPermission.MANAGE_MARKET, org=self.seller)
-        response = self.post(contract_path(contract, "accept"), user=market)
+        response = self.post(contract_path(contract, "accept"), answer(contract), user=market)
         self.assertEqual(response.status_code, 403)
         signer = self.member(OrgPermission.MANAGE_CONTRACTS, org=self.seller)
-        response = self.post(contract_path(contract, "accept"), user=signer)
+        response = self.post(contract_path(contract, "accept"), answer(contract), user=signer)
         self.assertEqual(response.status_code, 200)
 
     def test_signing_is_audited_for_the_signer(self):
         contract = self.proposed()
-        self.post(contract_path(contract, "accept"), user=self.seller_owner)
+        self.post(contract_path(contract, "accept"), answer(contract), user=self.seller_owner)
         row = ActivityLog.objects.get(object_id=contract.pk, action="status_changed")
         self.assertEqual(row.organization, self.seller)
         self.assertEqual(row.actor, self.seller_owner)
@@ -556,13 +581,13 @@ class AmendingTests(MarketTestCase):
         body = self.amend(contract).json()
         self.assertEqual(Decimal(body["current_terms"]["unit_price"]), Decimal("8000.00"))
         self.assertEqual(Decimal(body["pending_terms"]["unit_price"]), Decimal("9000.00"))
-        response = self.post(contract_path(contract, "accept"), user=self.seller_owner)
+        response = self.post(contract_path(contract, "accept"), answer(contract), user=self.seller_owner)
         self.assertEqual(response.status_code, 403)
 
     def test_the_new_price_applies_from_its_date_only(self):
         contract = self.active_contract()
         self.amend(contract)
-        self.post(contract_path(contract, "accept"))
+        self.post(contract_path(contract, "accept"), answer(contract))
         with override_settings(CONTRACT_GENERATION_HORIZON_DAYS=12):
             services.generate_orders(SupplyContract.objects.get(pk=contract.pk))
         before = contract.orders.get(delivery_date=self.today + timedelta(days=9))
@@ -580,7 +605,7 @@ class AmendingTests(MarketTestCase):
         self.post(
             contract_path(contract, "amend"), self.contract_terms(**terms), self.seller_owner
         )
-        return self.post(contract_path(contract, "accept"))
+        return self.post(contract_path(contract, "accept"), answer(contract))
 
     def delivery(self, contract, days):
         return contract.orders.get(delivery_date=self.today + timedelta(days=days))
@@ -656,7 +681,7 @@ class AmendingTests(MarketTestCase):
     def test_rejecting_a_change_leaves_the_contract_as_it_was(self):
         contract = self.active_contract()
         self.amend(contract)
-        body = self.post(contract_path(contract, "reject")).json()
+        body = self.post(contract_path(contract, "reject"), answer(contract)).json()
         self.assertEqual(body["status"], "active")
         self.assertEqual(Decimal(body["current_terms"]["unit_price"]), Decimal("8000.00"))
         self.assertIsNone(body["pending_terms"])
@@ -682,7 +707,7 @@ class AmendingTests(MarketTestCase):
         contract = self.active_contract()
         last_day = self.today + timedelta(days=12)
         self.amend(contract, end_date=str(last_day))
-        self.post(contract_path(contract, "accept"))
+        self.post(contract_path(contract, "accept"), answer(contract))
         contract.refresh_from_db()
         planned = list(services.planned_dates(contract, today=self.today, horizon_days=60))
         self.assertEqual(planned[-1][0], last_day)
