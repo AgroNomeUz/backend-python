@@ -438,6 +438,93 @@ class ProviderEventTests(BillingTestCase):
         self.assertEqual(Payment.objects.get().status, Payment.Status.FAILED)
         self.assertTrue(start().checkout_url)
 
+    def row_left_by_a_killed_process(self, **fields):
+        return Payment.objects.create(
+            organization=self.buyer,
+            amount=Decimal("100.00"),
+            purpose=Payment.Purpose.ORDER,
+            provider="mock",
+            **fields,
+        )
+
+    def age(self, payment):
+        Payment.objects.filter(pk=payment.pk).update(
+            created_at=timezone.now() - timedelta(minutes=2)
+        )
+
+    def test_a_killed_checkout_is_finished_by_the_next_attempt_for_the_order(self):
+        reference = uuid.uuid4()
+        payment = self.row_left_by_a_killed_process(
+            reference_type="test.thing", reference_id=reference
+        )
+
+        def start():
+            return services.start_payment(
+                organization=self.buyer,
+                amount=Decimal("100.00"),
+                purpose=Payment.Purpose.ORDER,
+                reference_type="test.thing",
+                reference_id=reference,
+            )
+
+        with mock.patch.object(gateways.MockGateway, "create_checkout") as create:
+            self.assertEqual(start().pk, payment.pk)
+        create.assert_not_called()
+
+        self.age(payment)
+        finished = start()
+        self.assertEqual(finished.pk, payment.pk)
+        self.assertTrue(finished.checkout_url)
+        self.assertTrue(finished.provider_reference)
+
+    def test_a_killed_checkout_is_finished_by_a_replayed_top_up(self):
+        payment = self.row_left_by_a_killed_process(idempotency_key="once")
+        self.age(payment)
+        finished = services.start_payment(
+            organization=self.buyer,
+            amount=Decimal("100.00"),
+            purpose=Payment.Purpose.TOP_UP,
+            idempotency_key="once",
+        )
+        self.assertEqual(finished.pk, payment.pk)
+        self.assertTrue(finished.checkout_url)
+
+    def test_a_failed_payment_is_not_reopened_by_a_replay(self):
+        payment = self.row_left_by_a_killed_process(
+            idempotency_key="once", status=Payment.Status.FAILED
+        )
+        self.age(payment)
+        replayed = services.start_payment(
+            organization=self.buyer,
+            amount=Decimal("100.00"),
+            purpose=Payment.Purpose.TOP_UP,
+            idempotency_key="once",
+        )
+        self.assertEqual(replayed.status, Payment.Status.FAILED)
+        self.assertFalse(replayed.checkout_url)
+
+    def test_two_retries_of_a_killed_checkout_keep_the_first_reference(self):
+        payment = self.row_left_by_a_killed_process(idempotency_key="once")
+        self.age(payment)
+
+        def beaten_to_it(row):
+            Payment.objects.filter(pk=row.pk).update(
+                provider_reference="first", checkout_url="/first"
+            )
+            return gateways.Checkout("second", "/second")
+
+        with mock.patch.object(
+            gateways.MockGateway, "create_checkout", side_effect=beaten_to_it
+        ):
+            finished = services.start_payment(
+                organization=self.buyer,
+                amount=Decimal("100.00"),
+                purpose=Payment.Purpose.TOP_UP,
+                idempotency_key="once",
+            )
+        self.assertEqual(finished.provider_reference, "first")
+        self.assertEqual(finished.checkout_url, "/first")
+
     def test_a_failed_effect_leaves_the_event_retryable(self):
         payment = self.pending()
         event_id = uuid.uuid4().hex

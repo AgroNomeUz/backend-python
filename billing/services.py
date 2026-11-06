@@ -39,6 +39,8 @@ from .models import (
 from .signals import payment_succeeded
 
 CENTS = Decimal("0.01")
+# A row with no checkout younger than this is a double tap still being served.
+CHECKOUT_ABANDONED_AFTER = timedelta(minutes=1)
 Kind = LedgerTransaction.Kind
 
 
@@ -296,9 +298,10 @@ def start_payment(
 
     Called outside any transaction on purpose: a network call must not hold row
     locks. If the provider call fails the row is marked failed, so nothing is
-    left pending and the buyer can simply try again. `on_created` runs in the
-    transaction that creates the row, and not at all on a replay: it is where a
-    caller writes its audit row.
+    left pending and the buyer can simply try again. A process that died before
+    the provider call leaves a pending row with no checkout, and the next attempt
+    finishes it. `on_created` runs in the transaction that creates the row, and
+    not at all on a replay: it is where a caller writes its audit row.
     """
     amount = money(amount)
     if amount <= 0:
@@ -314,7 +317,7 @@ def start_payment(
         ).first()
         if existing is not None:
             _check_same_request(existing.amount, amount)
-            return existing
+            return _finish_if_abandoned(existing, gateway)
 
     try:
         with transaction.atomic():
@@ -337,8 +340,22 @@ def start_payment(
         if existing is None:
             raise
         _check_same_request(existing.amount, amount)
-        return existing
+        return _finish_if_abandoned(existing, gateway)
 
+    return _open_checkout(payment, gateway)
+
+
+def _finish_if_abandoned(payment: Payment, gateway) -> Payment:
+    if (
+        payment.status != Payment.Status.PENDING
+        or payment.provider_reference
+        or timezone.now() - payment.created_at < CHECKOUT_ABANDONED_AFTER
+    ):
+        return payment
+    return _open_checkout(payment, gateway)
+
+
+def _open_checkout(payment: Payment, gateway) -> Payment:
     try:
         checkout = gateway.create_checkout(payment)
     except Exception as exc:
@@ -352,9 +369,13 @@ def start_payment(
             raise BillingError("The payment provider refused the request", status=502)
         raise
 
-    payment.provider_reference = checkout.provider_reference
-    payment.checkout_url = checkout.checkout_url
-    payment.save(update_fields=["provider_reference", "checkout_url"])
+    # First one wins: two retries can both finish a row, and overwriting a
+    # reference would leave a buyer at a checkout whose event matches nothing.
+    Payment.objects.filter(pk=payment.pk, provider_reference="").update(
+        provider_reference=checkout.provider_reference,
+        checkout_url=checkout.checkout_url,
+    )
+    payment.refresh_from_db()
     return payment
 
 
