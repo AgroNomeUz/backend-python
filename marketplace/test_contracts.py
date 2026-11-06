@@ -17,9 +17,9 @@ from core.models import ActivityLog
 from deals.models import Deal
 from marketplace import contract_services as services
 from marketplace import jobs
-from marketplace.models import ContractTerms, Order, Side, SupplyContract
+from marketplace.models import ContractTerms, Order, Product, Quote, Side, SupplyContract
 from marketplace.reliability import provider_reliability
-from users.models import OrgPermission
+from users.models import OrgPermission, Organization
 
 from .test_support import MarketTestCase, fund
 
@@ -155,6 +155,40 @@ class ProposingTests(MarketTestCase):
         body = response.json()
         self.assertEqual(Decimal(body["pending_terms"]["unit_price"]), Decimal("7000.00"))
         self.assertEqual(body["provider"]["id"], str(self.seller.public_id))
+
+    def test_a_contract_for_regulated_goods_needs_a_seller_still_verified(self):
+        beef = Product.objects.create(
+            category=self.vegetables, name="Beef", slug="beef", is_regulated=True
+        )
+        offer = self.make_offer(product=beef)
+        request = self.post(
+            "market/requests",
+            {
+                "product_id": str(beef.public_id),
+                "quantity": "200.000",
+                "needed_from": str(self.today),
+                "needed_until": str(self.today + timedelta(days=90)),
+                "is_recurring": True,
+            },
+        ).json()
+        quote = self.post(
+            f"market/requests/{request['id']}/quotes",
+            {
+                "unit_price": "7000.00",
+                "quantity": "200.000",
+                "valid_until": str(self.today + timedelta(days=5)),
+                "grade": "a",
+            },
+            self.seller_owner,
+        ).json()
+        Organization.objects.filter(pk=self.seller.pk).update(is_verified=False)
+
+        from_quote = self.post(
+            "market/contracts", {"quote_id": quote["id"], **self.contract_terms()}
+        )
+        self.assertEqual(from_quote.status_code, 403)
+        self.assertEqual(Quote.objects.get(public_id=quote["id"]).status, "submitted")
+        self.assertEqual(self.propose(offer=offer).status_code, 404)
 
     def test_another_buyers_quote_is_a_404(self):
         request = self.post(

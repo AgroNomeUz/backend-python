@@ -362,7 +362,7 @@ an order and a contract work.
 | `/api/v1/market/organizations/{id}/reliability` | GET | Public | Fill rate, on-time rate and dispute rate |
 | `/api/v1/market/offers` | GET | Public | The feed (`?search=`, `?category=`, `?product=`, `?region=`, `?grade=`, `?unit=`, `?available_on=`, price, `?sort=`) |
 | `/api/v1/market/offers/my` | GET | `market.view` | The organization's offers in every status |
-| `/api/v1/market/offers` | POST | `market.manage` | Publish; regulated goods need a verified organization |
+| `/api/v1/market/offers` | POST | `market.manage` | Publish; regulated goods need a verified organization, and leave the feed if it loses verification |
 | `/api/v1/market/offers/{id}` | GET, PATCH, DELETE | Public read, `market.manage` | One offer; PATCH also pauses and publishes |
 | `/api/v1/market/offers/{id}/images` | POST, DELETE | `market.manage` | Photos |
 | `/api/v1/market/requests` | GET, POST | `market.view`, `market.manage` | What buyers need; several farms can cover one request |

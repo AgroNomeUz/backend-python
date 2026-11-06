@@ -83,6 +83,14 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 - **Price** is copied from the offer, never from the request. A client may send
   the price it was shown, and gets a 409 if the seller has since changed it.
 - **The seller confirms before the buyer pays**, so a decline needs no refund.
+- **Regulated goods** need a verified seller at every way into a sale:
+  publishing, quoting, taking a quote, proposing a contract. Losing verification
+  takes such an offer off the market at once, feed and public profile included,
+  and regaining it brings the offer back. The seller still sees it as `active`
+  in `/offers/my`. Deliveries already confirmed under a signed contract carry
+  on. Nothing checks again after those four points, so an order already placed
+  can still be confirmed, and so can the deliveries a signed contract goes on
+  generating.
 - **Partial acceptance** releases the accepted share at once and holds the rest
   in dispute. The seller can concede (refund), or platform staff split it.
 - **Deadlines** mean every order reaches an end even if both sides go quiet, so

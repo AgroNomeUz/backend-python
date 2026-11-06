@@ -249,6 +249,9 @@ def active_offer_q(prefix: str = "") -> Q:
             f"{prefix}quantity_available__gt": 0,
             f"{prefix}product__is_active": True,
         }
+    ) & (
+        Q(**{f"{prefix}product__is_regulated": False})
+        | Q(**{f"{prefix}organization__is_verified": True})
     )
 
 

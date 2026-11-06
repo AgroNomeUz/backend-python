@@ -16,8 +16,15 @@ from django.test import override_settings
 
 from core.models import ActivityLog
 from farms.models import CropZone, Farm, Field, Season
-from marketplace.models import Offer, Product, ProductCategory, market_today
-from users.models import OrgPermission
+from marketplace.models import (
+    Offer,
+    OfferImage,
+    Product,
+    ProductCategory,
+    active_offer_q,
+    market_today,
+)
+from users.models import OrgPermission, Organization
 
 from .test_support import MarketTestCase, auth
 
@@ -87,6 +94,38 @@ class FeedTests(MarketTestCase):
         )
         rows = self.feed()
         self.assertEqual([row["id"] for row in rows["items"]], [str(shown.public_id)])
+
+    def test_regulated_goods_leave_the_market_with_the_sellers_verification(self):
+        beef = Product.objects.create(
+            category=self.vegetables, name="Beef", slug="beef", is_regulated=True
+        )
+        offer = self.make_offer(title="Beef", product=beef)
+        self.assertEqual(self.feed()["count"], 1)
+        profile = f"organizations/{self.seller.public_id}"
+        self.assertEqual(self.get(profile, user=False).status_code, 200)
+
+        Organization.objects.filter(pk=self.seller.pk).update(is_verified=False)
+
+        self.assertEqual(self.feed()["count"], 0)
+        detail = f"market/offers/{offer.public_id}"
+        self.assertEqual(self.get(detail, user=False).status_code, 404)
+        self.assertEqual(self.get(detail, self.seller_owner).status_code, 200)
+        self.assertEqual(self.get(profile, user=False).status_code, 404)
+        self.assertEqual(self.post("market/orders", self.order_body(offer)).status_code, 404)
+
+        self.make_offer(title="Tomatoes")
+        self.assertEqual(self.feed()["count"], 1)
+        self.assertEqual(self.get(profile, user=False).status_code, 200)
+
+    def test_the_regulated_rule_follows_the_prefix(self):
+        beef = Product.objects.create(
+            category=self.vegetables, name="Beef", slug="beef", is_regulated=True
+        )
+        image = OfferImage.objects.create(offer=self.make_offer(product=beef), file="x.png")
+        Organization.objects.filter(pk=self.seller.pk).update(is_verified=False)
+        self.assertFalse(OfferImage.objects.filter(active_offer_q("offer__")).exists())
+        Organization.objects.filter(pk=self.seller.pk).update(is_verified=True)
+        self.assertEqual(OfferImage.objects.get(active_offer_q("offer__")), image)
 
     def test_an_offer_on_its_last_day_is_still_shown(self):
         self.make_offer(available_until=self.today)

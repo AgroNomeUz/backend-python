@@ -40,6 +40,7 @@ from .models import (
     active_offers,
     market_today,
 )
+from .order_services import require_may_sell
 from .reliability import provider_reliability
 from .schemas import (
     NULLABLE_OFFER_FIELDS,
@@ -240,14 +241,6 @@ async def get_offer(request, offer_id: UUID):
 
 
 # ── writing ──────────────────────────────────────────────────────────────────
-
-def require_may_sell(product: Product, organization: Organization) -> None:
-    """Every way into selling comes through here: publishing an offer, sending a quote."""
-    if product.is_regulated and not organization.is_verified:
-        raise HttpError(
-            403, f"Only verified organizations can sell {product.name.lower()}."
-        )
-
 
 def _check_publishable(offer: Offer) -> None:
     """Called on the way to `active`, the only state in which money can follow."""

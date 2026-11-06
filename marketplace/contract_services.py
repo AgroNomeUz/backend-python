@@ -36,6 +36,7 @@ from .order_services import (
     contract_order_values,
     line_total,
     record_generated_order,
+    require_may_sell,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ def propose_contract(
 
     if provider.pk == actor.organization.pk:
         raise HttpError(400, "You cannot contract with your own organization.")
+    require_may_sell(product, provider)
     _validate(terms, earliest_start=market_today())
 
     contract = SupplyContract.objects.create(

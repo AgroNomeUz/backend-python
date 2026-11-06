@@ -38,6 +38,7 @@ from .models import (
     Order,
     OrderDispute,
     OrderEvent,
+    Product,
     PurchaseRequest,
     Quote,
     Side,
@@ -75,6 +76,18 @@ def line_total(quantity: Decimal, unit_price: Decimal) -> Decimal:
     if total >= MONEY_LIMIT:
         raise HttpError(400, "That order is too large")
     return total
+
+
+def require_may_sell(product: Product, organization: Organization) -> None:
+    """
+    Every way into selling comes through here: publishing an offer, sending a
+    quote, taking a quote and proposing a contract. Buying from an offer goes
+    through `active_offer_q`, which holds the same rule.
+    """
+    if product.is_regulated and not organization.is_verified:
+        raise HttpError(
+            403, f"Only verified organizations can sell {product.name.lower()}."
+        )
 
 
 def audit(actor: Actor, target, action: str, changes: dict) -> None:
@@ -285,6 +298,7 @@ def order_from_quote(
             raise HttpError(
                 409, "This request is for regular supply: propose a contract instead."
             )
+        require_may_sell(request.product, quote.provider_organization)
         if delivery_date < market_today():
             raise HttpError(400, "The delivery date has passed.")
         if not request.needed_from <= delivery_date <= request.needed_until:

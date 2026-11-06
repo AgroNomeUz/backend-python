@@ -23,13 +23,9 @@ from users.models import OrgPermission, Organization
 from users.permissions import readable_organization, writable_organization
 
 from .models import PurchaseRequest, Quote, Side, market_today
-from .offer_api import (
-    active_product_or_400,
-    region_or_400,
-    require_may_sell,
-)
+from .offer_api import active_product_or_400, region_or_400
 from .order_api import order_detail
-from .order_services import Actor, close_request, order_from_quote
+from .order_services import Actor, close_request, order_from_quote, require_may_sell
 from .schemas import (
     OrderDetailOut,
     PurchaseRequestCreateIn,

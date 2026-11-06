@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from core.models import ActivityLog
 from marketplace.models import Order, Product, PurchaseRequest, Quote
-from users.models import OrgPermission
+from users.models import OrgPermission, Organization
 
 from .test_support import MarketTestCase, make_org
 
@@ -136,6 +136,18 @@ class QuoteTests(RequestTestCase):
         self.assertFalse(self.outsider.is_verified)
         self.assertEqual(self.quote(data["id"], self.outsider_owner).status_code, 403)
         self.assertEqual(self.quote(data["id"]).status_code, 201)
+
+    def test_a_quote_on_regulated_goods_dies_with_the_sellers_verification(self):
+        beef = Product.objects.create(
+            category=self.vegetables, name="Beef", slug="beef", is_regulated=True
+        )
+        data = self.make_request(product_id=str(beef.public_id))
+        quote = self.quote(data["id"]).json()
+        Organization.objects.filter(pk=self.seller.pk).update(is_verified=False)
+        response = self.post(f"market/quotes/{quote['id']}/accept", self.accept_body())
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Quote.objects.get(public_id=quote["id"]).status, "submitted")
+        self.assertEqual(Order.objects.count(), 0)
 
     def test_one_live_quote_per_seller(self):
         data = self.make_request()
