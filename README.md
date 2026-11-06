@@ -367,7 +367,7 @@ an order and a contract work.
 | `/api/v1/market/offers/{id}/images` | POST, DELETE | `market.manage` | Photos |
 | `/api/v1/market/requests` | GET, POST | `market.view`, `market.manage` | What buyers need; several farms can cover one request |
 | `/api/v1/market/requests/{id}/quotes` | GET, POST | `market.view`, `market.manage` | The buyer sees all, a seller only their own |
-| `/api/v1/market/quotes/{id}/accept` | POST | `market.manage` | Turns a one-time quote into an order |
+| `/api/v1/market/quotes/{id}/accept` | POST | `market.manage` | Turns a one-time quote into an order; the request closes once paid orders cover it |
 | `/api/v1/market/orders` | GET, POST | `market.view`, `market.manage` | `?role=provider\|customer`, `?status=`, `?contract_id=` |
 | `/api/v1/market/orders/{id}/confirm`, `decline`, `dispatch`, `deliver`, `dispute/concede` | POST | `market.manage` | The seller's steps |
 | `/api/v1/market/orders/{id}/pay` | POST | `billing.manage` | `{"method": "wallet"\|"gateway"}` |

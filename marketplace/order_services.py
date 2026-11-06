@@ -8,6 +8,10 @@ job auto-accepting while the buyer rejects. Status changes go through `_move`
 alone, which checks `Order.ALLOWED_TRANSITIONS`, records an `OrderEvent` and
 writes the audit row, all in the same transaction as the money.
 
+An order from a quote locks its purchase request next, before any money moves:
+order → request → quote. `order_from_quote` goes request → quote but only ever
+creates orders, never locks one, so the two cannot deadlock.
+
 Services take an `Actor` rather than a request because the job runner performs
 the same operations with nobody logged in.
 """
@@ -277,8 +281,8 @@ def order_from_quote(
 ) -> Order:
     """
     The buyer takes a quote. The seller committed by quoting, so this goes
-    straight to payment. Several quotes can cover one request, which closes once
-    they add up to what the buyer asked for.
+    straight to payment. Several quotes can cover one request, which stays open
+    until paid orders add up to what the buyer asked for: see `_hold_from_wallet`.
     """
     with transaction.atomic():
         # Request first: closing a request locks it and then touches its quotes.
@@ -340,11 +344,6 @@ def order_from_quote(
 
         quote.status = Quote.Status.ACCEPTED
         quote.save(update_fields=["status", "updated_at"])
-        covered = request.quotes.filter(status=Quote.Status.ACCEPTED).aggregate(
-            total=Sum("quantity")
-        )["total"]
-        if covered >= request.quantity:
-            close_request(request)
     return order
 
 
@@ -357,6 +356,34 @@ def close_request(request: PurchaseRequest) -> None:
     )
 
 
+def _locked_request(order: Order) -> PurchaseRequest:
+    return PurchaseRequest.objects.select_for_update(of=("self",)).get(quotes=order.quote_id)
+
+
+def _reopen_quote(order: Order, actor: Actor) -> None:
+    """
+    An order that ended unpaid used up none of the request, so its quote can be
+    taken again, unless the request has closed, the quote has lapsed or the seller
+    has sent a newer one.
+    """
+    request = _locked_request(order)
+    newer = request.quotes.filter(
+        provider_organization=order.provider_organization, status=Quote.Status.SUBMITTED
+    )
+    if request.status != PurchaseRequest.Status.OPEN or newer.exists():
+        return
+    reopened = Quote.objects.filter(
+        pk=order.quote_id, valid_until__gte=market_today()
+    ).update(status=Quote.Status.SUBMITTED, updated_at=timezone.now())
+    if reopened:
+        audit(
+            actor,
+            order,
+            ActivityLog.Action.UPDATED,
+            {"quote": {"from": Quote.Status.ACCEPTED, "to": Quote.Status.SUBMITTED}},
+        )
+
+
 # ── the seller's answer ──────────────────────────────────────────────────────
 
 def _commission_rate(order: Order) -> Decimal:
@@ -366,7 +393,11 @@ def _commission_rate(order: Order) -> Decimal:
 
 
 def _hold_from_wallet(order: Order, actor: Actor) -> None:
-    """Move the order to `paid`. Raises `InsufficientFunds` if the wallet is short."""
+    """
+    Move the order to `paid`. Raises `InsufficientFunds` if the wallet is short.
+    Closes the order's purchase request if paid orders now cover it.
+    """
+    request = _locked_request(order) if order.quote_id else None
     hold = billing.create_hold(
         payer=order.customer_organization,
         payee=order.provider_organization,
@@ -376,6 +407,14 @@ def _hold_from_wallet(order: Order, actor: Actor) -> None:
         reference_id=order.public_id,
     )
     _move(order, Status.PAID, actor, hold=hold, paid_at=timezone.now())
+    if request is not None and request.status == PurchaseRequest.Status.OPEN:
+        covered = (
+            Order.objects.filter(quote__request=request, paid_at__isnull=False)
+            .exclude(status=Status.CANCELLED)
+            .aggregate(total=Sum("quantity"))["total"]
+        )
+        if covered >= request.quantity:
+            close_request(request)
 
 
 @transaction.atomic
@@ -440,7 +479,7 @@ def retry_contract_funding(order: Order) -> None:
 def _close_without_delivery(
     order: Order, to_status: str, actor: Actor, *, reason: str, cancelled_by: str
 ) -> None:
-    """The ways an order ends unfulfilled. Stock and money both go back."""
+    """The ways an order ends unfulfilled. Stock, money and any unpaid quote go back."""
     if order.hold_id:
         billing.refund_remaining(order.hold)
     _release_stock(order)
@@ -452,6 +491,8 @@ def _close_without_delivery(
         cancelled_by=cancelled_by,
         cancel_reason=reason,
     )
+    if order.quote_id and not order.hold_id:
+        _reopen_quote(order, actor)
 
 
 @transaction.atomic

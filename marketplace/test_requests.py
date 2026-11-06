@@ -6,11 +6,14 @@ A buyer posting what they need, sellers quoting, and quotes becoming orders.
 from datetime import timedelta
 from decimal import Decimal
 
+from billing import services as billing
+from billing.models import Payment
 from core.models import ActivityLog
 from marketplace.models import Order, Product, PurchaseRequest, Quote
+from marketplace.order_services import ORDER_REFERENCE, expire_unpaid
 from users.models import OrgPermission, Organization
 
-from .test_support import MarketTestCase, make_org
+from .test_support import MarketTestCase, fund, make_org, settle_payment
 
 
 class RequestTestCase(MarketTestCase):
@@ -226,14 +229,119 @@ class AcceptingQuotesTests(RequestTestCase):
         self.assertEqual(body["provider"]["id"], str(self.seller.public_id))
         self.assertIsNotNone(body["pay_by"])
 
-    def test_a_request_closes_once_it_is_covered(self):
+    def take(self, quote) -> str:
+        response = self.post(f"market/quotes/{quote['id']}/accept", self.accept_body())
+        self.assertEqual(response.status_code, 201, response.content)
+        return response.json()["id"]
+
+    def pay(self, order_id) -> None:
+        fund(self.buyer, Order.objects.get(public_id=order_id).subtotal)
+        response = self.post(f"market/orders/{order_id}/pay", {"method": "wallet"})
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def status_of(self, quote) -> str:
+        return Quote.objects.get(public_id=quote["id"]).status
+
+    def request_status(self, data) -> str:
+        return PurchaseRequest.objects.get(public_id=data["id"]).status
+
+    def test_a_request_closes_once_paid_orders_cover_it(self):
         data = self.make_request()
         winner = self.quote(data["id"]).json()
         other = self.quote(data["id"], self.outsider_owner).json()
-        self.post(f"market/quotes/{winner['id']}/accept", self.accept_body())
-        purchase_request = PurchaseRequest.objects.get(public_id=data["id"])
-        self.assertEqual(purchase_request.status, "closed")
-        self.assertEqual(Quote.objects.get(public_id=other["id"]).status, "rejected")
+
+        order_id = self.take(winner)
+        self.assertEqual(self.request_status(data), "open")
+        self.assertEqual(self.status_of(other), "submitted")
+
+        self.pay(order_id)
+        self.assertEqual(self.request_status(data), "closed")
+        self.assertEqual(self.status_of(other), "rejected")
+
+    def test_an_order_paid_through_the_gateway_closes_the_request_too(self):
+        data = self.make_request()
+        order = Order.objects.get(public_id=self.take(self.quote(data["id"]).json()))
+        settle_payment(
+            billing.start_payment(
+                organization=self.buyer,
+                amount=order.subtotal,
+                purpose=Payment.Purpose.ORDER,
+                reference_type=ORDER_REFERENCE,
+                reference_id=order.public_id,
+            )
+        )
+        self.assertEqual(self.request_status(data), "closed")
+
+    def test_an_unpaid_order_gives_the_request_back(self):
+        data = self.make_request()
+        winner = self.quote(data["id"]).json()
+        other = self.quote(data["id"], self.outsider_owner).json()
+        order = Order.objects.get(public_id=self.take(winner))
+
+        expire_unpaid(order)
+
+        self.assertEqual(self.request_status(data), "open")
+        self.assertEqual(self.status_of(winner), "submitted")
+        self.assertEqual(self.status_of(other), "submitted")
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                object_id=order.pk, action="updated", changes__quote__to="submitted"
+            ).exists()
+        )
+        self.take(other)
+        self.take(winner)
+        self.assertEqual(Order.objects.count(), 3)
+
+    def test_cancelling_before_paying_gives_the_quote_back(self):
+        data = self.make_request()
+        quote = self.quote(data["id"]).json()
+        self.post(f"market/orders/{self.take(quote)}/cancel", {"reason": "Wrong one"})
+        self.assertEqual(self.status_of(quote), "submitted")
+
+    def test_a_refunded_order_keeps_its_quote(self):
+        data = self.make_request()
+        quote = self.quote(data["id"], quantity="100.000").json()
+        order_id = self.take(quote)
+        self.pay(order_id)
+        self.post(f"market/orders/{order_id}/cancel", {"reason": "Wrong one"})
+        self.assertEqual(self.status_of(quote), "accepted")
+
+    def test_a_refunded_order_does_not_cover_the_request(self):
+        data = self.make_request()
+        first = self.quote(data["id"], quantity="200.000").json()
+        second = self.quote(data["id"], self.outsider_owner, quantity="100.000").json()
+        refunded = self.take(first)
+        self.pay(refunded)
+        self.post(f"market/orders/{refunded}/cancel", {"reason": "Wrong one"})
+        self.pay(self.take(second))
+        self.assertEqual(self.request_status(data), "open")
+
+    def test_a_lapsed_quote_is_not_given_back(self):
+        data = self.make_request()
+        quote = self.quote(data["id"]).json()
+        order = Order.objects.get(public_id=self.take(quote))
+        Quote.objects.filter(public_id=quote["id"]).update(
+            valid_until=self.today - timedelta(days=1)
+        )
+        expire_unpaid(order)
+        self.assertEqual(self.status_of(quote), "accepted")
+
+    def test_a_newer_quote_from_the_seller_wins(self):
+        data = self.make_request()
+        first = self.quote(data["id"]).json()
+        order = Order.objects.get(public_id=self.take(first))
+        second = self.quote(data["id"]).json()
+        expire_unpaid(order)
+        self.assertEqual(self.status_of(first), "accepted")
+        self.assertEqual(self.status_of(second), "submitted")
+
+    def test_a_closed_request_gets_no_quote_back(self):
+        data = self.make_request()
+        quote = self.quote(data["id"]).json()
+        order = Order.objects.get(public_id=self.take(quote))
+        self.post(f"market/requests/{data['id']}/close")
+        expire_unpaid(order)
+        self.assertEqual(self.status_of(quote), "accepted")
 
     def test_several_small_farms_can_cover_one_request(self):
         data = self.make_request(quantity="300.000")
@@ -242,17 +350,22 @@ class AcceptingQuotesTests(RequestTestCase):
         third_org, third_owner = make_org("third-farm", self.region)
         third = self.quote(data["id"], third_owner, quantity="50.000").json()
 
-        self.post(f"market/quotes/{first['id']}/accept", self.accept_body())
+        orders = [self.take(first)]
         read = self.get(f"market/requests/{data['id']}").json()
         self.assertEqual(read["status"], "open")
         self.assertEqual(Decimal(read["quantity_covered"]), 100)
 
-        self.post(f"market/quotes/{second['id']}/accept", self.accept_body())
-        self.post(f"market/quotes/{third['id']}/accept", self.accept_body())
+        orders += [self.take(second), self.take(third)]
         read = self.get(f"market/requests/{data['id']}").json()
-        self.assertEqual(read["status"], "closed")
+        self.assertEqual(read["status"], "open")
         self.assertEqual(Decimal(read["quantity_covered"]), 300)
         self.assertEqual(Order.objects.filter(customer_organization=self.buyer).count(), 3)
+
+        self.pay(orders[0])
+        self.pay(orders[1])
+        self.assertEqual(self.request_status(data), "open")
+        self.pay(orders[2])
+        self.assertEqual(self.request_status(data), "closed")
 
     def test_covered_is_the_whole_total_for_a_seller_too(self):
         data = self.make_request()

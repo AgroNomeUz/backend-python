@@ -83,6 +83,13 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 - **Price** is copied from the offer, never from the request. A client may send
   the price it was shown, and gets a 409 if the seller has since changed it.
 - **The seller confirms before the buyer pays**, so a decline needs no refund.
+- **A purchase request** closes when paid orders from its quotes cover the
+  quantity, and any quote still waiting is then rejected. Taking a quote does
+  not close it, so a buyer can take more quotes than the request needs. An order
+  that ends unpaid gives its quote back to `submitted`, so it can be taken again,
+  unless the request has closed, the quote is past `valid_until`, or the seller
+  has sent a newer one. A refunded order keeps its quote `accepted` and leaves
+  the request closed. `quantity_covered` counts accepted quotes, paid or not.
 - **Regulated goods** need a verified seller at every way into a sale:
   publishing, quoting, taking a quote, proposing a contract. Losing verification
   takes such an offer off the market at once, feed and public profile included,
