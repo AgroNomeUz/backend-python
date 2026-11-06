@@ -152,11 +152,11 @@ def verify_otp(phone: str, code: str) -> PhoneOtp:
         otp = (
             PhoneOtp.objects
             .select_for_update()
-            .filter(phone=phone, verified_at__isnull=True)
+            .filter(phone=phone)
             .order_by("-created_at")
             .first()
         )
-        if otp is None or otp.is_expired:
+        if otp is None or otp.is_expired or otp.verified_at is not None:
             failure = "The code has expired. Request a new one."
         elif otp.attempts >= settings.OTP_MAX_ATTEMPTS:
             failure = "Too many incorrect attempts. Request a new code."

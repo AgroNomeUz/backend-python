@@ -27,7 +27,7 @@ from api.schemas import OtpThrottledOut
 from core.audit import client_ip, log_activity
 from core.models import ActivityLog
 from users.models import OrgPermission
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import readable_organization, writable_organization
 
 from . import gateway as gateways
 from . import services
@@ -46,20 +46,6 @@ from .schemas import (
 )
 
 billing_router = Router(tags=["Billing"])
-
-
-def writable_organization(request):
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_BILLING)
-    return organization
-
-
-def billing_call(function, *args, **kwargs):
-    """Run a service, turning its domain error into the HTTP answer."""
-    try:
-        return function(*args, **kwargs)
-    except services.BillingError as exc:
-        raise HttpError(exc.status, exc.message)
 
 
 def _require_mock() -> None:
@@ -101,28 +87,26 @@ async def list_wallet_entries(request):
 # ── payments in ──────────────────────────────────────────────────────────────
 
 def _apply_top_up(request, organization, data: TopUpIn) -> Payment:
-    payment = billing_call(
-        services.start_payment,
+    return services.start_payment(
         organization=organization,
         amount=data.amount,
         purpose=Payment.Purpose.TOP_UP,
         user=request.auth,
         idempotency_key=data.idempotency_key,
+        on_created=lambda payment: log_activity(
+            request,
+            organization,
+            ActivityLog.Action.CREATED,
+            payment,
+            changes={"amount": {"from": None, "to": str(payment.amount)}},
+        ),
     )
-    log_activity(
-        request,
-        organization,
-        ActivityLog.Action.CREATED,
-        payment,
-        changes={"amount": {"from": None, "to": str(payment.amount)}},
-    )
-    return payment
 
 
 @billing_router.post("/top-ups", response={201: PaymentOut})
 async def create_top_up(request, data: TopUpIn):
     """Start adding money to the wallet. The buyer finishes at `checkout_url`."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     return 201, await sync_to_async(_apply_top_up)(request, organization, data)
 
 
@@ -162,7 +146,7 @@ def _apply_mock_payment(payment: Payment, outcome: str) -> Payment:
 async def mock_complete_payment(request, payment_id: UUID, data: MockCompleteIn):
     """**Development only.** Plays the buyer finishing the provider's checkout."""
     _require_mock()
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     payment = await aget_object_or_404(
         Payment.objects.filter(organization=organization), public_id=payment_id
     )
@@ -176,7 +160,7 @@ async def mock_complete_payment(request, payment_id: UUID, data: MockCompleteIn)
 )
 async def send_destination_code(request):
     """Text a code to the caller. Adding a payout account has to present it."""
-    writable_organization(request)
+    writable_organization(request, OrgPermission.MANAGE_BILLING)
     phone = request.auth.phone
     if not phone:
         raise HttpError(400, "Your account has no phone number to confirm this with")
@@ -195,23 +179,21 @@ def _apply_add_destination(request, organization, data: DestinationCreateIn):
         verify_otp(phone, data.code)
     except OtpInvalid as exc:
         raise HttpError(400, str(exc))
-    destination = billing_call(
-        services.add_destination,
+    return services.add_destination(
         organization=organization,
         user=request.auth,
         kind=data.kind,
         label=data.label,
         holder_name=data.holder_name,
         account_number=data.account_number,
+        on_created=lambda destination: log_activity(
+            request,
+            organization,
+            ActivityLog.Action.CREATED,
+            destination,
+            changes={"last4": {"from": None, "to": destination.last4}},
+        ),
     )
-    log_activity(
-        request,
-        organization,
-        ActivityLog.Action.CREATED,
-        destination,
-        changes={"last4": {"from": None, "to": destination.last4}},
-    )
-    return destination
 
 
 @billing_router.get("/payout-destinations", response=list[DestinationOut])
@@ -228,7 +210,7 @@ async def list_destinations(request):
 @billing_router.post("/payout-destinations", response={201: DestinationOut})
 async def add_payout_destination(request, data: DestinationCreateIn):
     """Add an account to withdraw to. Usable after the cooling-off period."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     return 201, await sync_to_async(_apply_add_destination)(request, organization, data)
 
 
@@ -247,7 +229,7 @@ def _apply_remove_destination(request, organization, destination) -> None:
 @billing_router.delete("/payout-destinations/{destination_id}", response={204: None})
 async def remove_destination(request, destination_id: UUID):
     """A soft delete: payouts already made to it keep their history."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     destination = await aget_object_or_404(
         PayoutDestination.objects.filter(organization=organization, is_active=True),
         public_id=destination_id,
@@ -259,20 +241,19 @@ async def remove_destination(request, destination_id: UUID):
 # ── payouts ──────────────────────────────────────────────────────────────────
 
 def _apply_payout(request, organization, destination, data: PayoutCreateIn) -> Payout:
-    payout = billing_call(
-        services.request_payout,
+    payout = services.request_payout(
         organization=organization,
         destination=destination,
         amount=data.amount,
         user=request.auth,
         idempotency_key=data.idempotency_key,
-    )
-    log_activity(
-        request,
-        organization,
-        ActivityLog.Action.CREATED,
-        payout,
-        changes={"amount": {"from": None, "to": str(payout.amount)}},
+        on_created=lambda payout: log_activity(
+            request,
+            organization,
+            ActivityLog.Action.CREATED,
+            payout,
+            changes={"amount": {"from": None, "to": str(payout.amount)}},
+        ),
     )
     return Payout.objects.select_related("destination").get(pk=payout.pk)
 
@@ -287,7 +268,7 @@ async def list_payouts(request):
 @billing_router.post("/payouts", response={201: PayoutOut})
 async def create_payout(request, data: PayoutCreateIn):
     """Withdraw money from the wallet to one of the organization's accounts."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     destination = await aget_object_or_404(
         PayoutDestination.objects.filter(organization=organization),
         public_id=data.destination_id,
@@ -324,7 +305,7 @@ def _apply_mock_payout(payout: Payout, outcome: str) -> Payout:
 async def mock_complete_payout(request, payout_id: UUID, data: MockCompleteIn):
     """**Development only.** Plays the provider reporting the transfer's result."""
     _require_mock()
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_BILLING)
     payout = await aget_object_or_404(
         Payout.objects.filter(organization=organization), public_id=payout_id
     )

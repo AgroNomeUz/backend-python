@@ -11,6 +11,7 @@ pyjwt = "*"
 pydantic = {extras = ["email"], version = "*"}
 django-cors-headers = "*"
 whitenoise = "*"
+uvicorn = "*"
 
 [dev-packages]
 

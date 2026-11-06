@@ -37,7 +37,7 @@ from core.models import ActivityLog
 from inquiries.views import received_inquiries
 from listings.models import Listing
 from users.models import OrgPermission
-from users.permissions import caller_organization, require_perm
+from users.permissions import writable_organization
 
 from .models import Deal, Review
 from .schemas import DealCreateIn, DealOut, ReviewCreateIn, ReviewOut
@@ -48,13 +48,6 @@ deals_router = Router(tags=["Deals"])
 # §4 suggests 30 days; nothing else in the proposal names a different figure,
 # so this is the one place it needs to live.
 REVIEW_WINDOW = timedelta(days=30)
-
-
-def writable_organization(request):
-    """The caller's organization, for an endpoint about to write a deal."""
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_DEALS)
-    return organization
 
 
 def _deal_relations(queryset):
@@ -172,7 +165,7 @@ async def create_deal(request, inquiry_id: UUID, data: DealCreateIn):
     Resolved through the caller's own inbox (`received_inquiries`), so
     another organization's inquiry id is a 404, never a 403 (§0.1).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_DEALS)
     inquiry = await aget_object_or_404(
         received_inquiries(organization), public_id=inquiry_id
     )
@@ -288,7 +281,7 @@ async def confirm_deal(request, deal_id: UUID):
     Scoped to deals where the caller is the customer, so the provider's own
     id here is a 404 (§0.1), not a 403.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_DEALS)
     deal = await aget_object_or_404(customer_deals(organization), public_id=deal_id)
     return await sync_to_async(_apply_confirm_deal)(request, organization, deal)
 
@@ -328,7 +321,7 @@ def _apply_decline_deal(request, organization, deal: Deal) -> Deal:
 @deals_router.post("/{deal_id}/decline", response=DealOut)
 async def decline_deal(request, deal_id: UUID):
     """The customer side declines a pending deal."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_DEALS)
     deal = await aget_object_or_404(customer_deals(organization), public_id=deal_id)
     return await sync_to_async(_apply_decline_deal)(request, organization, deal)
 
@@ -381,7 +374,7 @@ async def create_review(request, deal_id: UUID, data: ReviewCreateIn):
     Review a completed deal — the customer side, once, within 30 days of
     `completed_at` (§4).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_DEALS)
     deal = await aget_object_or_404(customer_deals(organization), public_id=deal_id)
     review = await sync_to_async(_apply_create_review)(request, organization, deal, data)
     return 201, review

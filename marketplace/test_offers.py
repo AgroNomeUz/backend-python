@@ -92,6 +92,10 @@ class FeedTests(MarketTestCase):
         self.make_offer(available_until=self.today)
         self.assertEqual(self.feed()["count"], 1)
 
+    def test_a_page_cannot_ask_for_a_whole_table(self):
+        self.assertEqual(self.get("market/offers?limit=100", user=False).status_code, 200)
+        self.assertEqual(self.get("market/offers?limit=101", user=False).status_code, 422)
+
     def test_a_retired_product_takes_its_offers_with_it(self):
         retired = Product.objects.create(
             category=self.vegetables, name="Old", slug="old", is_active=False
@@ -138,6 +142,11 @@ class FeedTests(MarketTestCase):
         draft = self.make_offer(status=Offer.Status.DRAFT)
         self.assertEqual(self.get(f"market/offers/{active.public_id}", user=False).status_code, 200)
         self.assertEqual(self.get(f"market/offers/{draft.public_id}", user=False).status_code, 404)
+
+    def test_a_temporary_password_still_sees_public_pages(self):
+        offer = self.make_offer()
+        member = self.member(must_change=True)
+        self.assertEqual(self.get(f"market/offers/{offer.public_id}", member).status_code, 200)
 
     def test_the_owner_reads_their_draft(self):
         draft = self.make_offer(status=Offer.Status.DRAFT)

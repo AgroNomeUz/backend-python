@@ -34,16 +34,11 @@ class StatementEntryOut(Schema):
     id: UUID = Field(alias="public_id")
     kind: str
     amount: Decimal
-    memo: str
     created_at: datetime
 
     @staticmethod
     def resolve_kind(obj) -> str:
         return obj.transaction.kind
-
-    @staticmethod
-    def resolve_memo(obj) -> str:
-        return obj.transaction.memo
 
 
 class TopUpIn(Schema):

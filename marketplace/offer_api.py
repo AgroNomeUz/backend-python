@@ -24,12 +24,12 @@ from ninja.files import UploadedFile
 from ninja.pagination import LimitOffsetPagination, paginate
 
 from api.auth import OptionalJWTBearer, authenticated_user
-from core.audit import log_activity
+from core.audit import diff, log_activity
 from core.models import ActivityLog
 from farms.models import CropZone
 from listings.views import _validate_image
 from users.models import OrgPermission, Organization, Region
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import readable_organization, writable_organization
 
 from .models import (
     Offer,
@@ -77,23 +77,9 @@ SORT_OPTIONS = {
 }
 
 
-def writable_organization(request) -> Organization:
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_MARKET)
-    return organization
-
-
 def offer_snapshot(offer: Offer) -> dict:
     """Strings, so a price goes into the audit trail exactly as it was."""
     return {name: str(getattr(offer, name)) for name in AUDIT_FIELDS}
-
-
-def diff_snapshots(before: dict, after: dict) -> dict:
-    return {
-        name: {"from": before.get(name), "to": value}
-        for name, value in after.items()
-        if before.get(name) != value
-    }
 
 
 def offer_relations(queryset):
@@ -255,14 +241,19 @@ async def get_offer(request, offer_id: UUID):
 
 # ── writing ──────────────────────────────────────────────────────────────────
 
+def require_may_sell(product: Product, organization: Organization) -> None:
+    """Every way into selling comes through here: publishing an offer, sending a quote."""
+    if product.is_regulated and not organization.is_verified:
+        raise HttpError(
+            403, f"Only verified organizations can sell {product.name.lower()}."
+        )
+
+
 def _check_publishable(offer: Offer) -> None:
     """Called on the way to `active`, the only state in which money can follow."""
     if offer.available_until < market_today():
         raise HttpError(400, "This offer's dates have passed.")
-    if offer.product.is_regulated and not offer.organization.is_verified:
-        raise HttpError(
-            403, f"Only verified organizations can sell {offer.product.name.lower()}."
-        )
+    require_may_sell(offer.product, offer.organization)
 
 
 def _check_dates(offer: Offer) -> None:
@@ -311,14 +302,14 @@ def _apply_create_offer(request, organization, data: OfferCreateIn) -> Offer:
             organization,
             ActivityLog.Action.CREATED,
             offer,
-            changes=diff_snapshots({}, offer_snapshot(offer)),
+            changes=diff({}, offer_snapshot(offer)),
         )
     return org_offers(organization).get(pk=offer.pk)
 
 
 @offers_router.post("", response={201: OfferOut})
 async def create_offer(request, data: OfferCreateIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return 201, await sync_to_async(_apply_create_offer)(request, organization, data)
 
 
@@ -360,7 +351,7 @@ def _apply_update_offer(request, organization, offer_id, data: OfferUpdateIn) ->
             _check_publishable(offer)
             offer.published_at = offer.published_at or timezone.now()
 
-        changes = diff_snapshots(before, offer_snapshot(offer))
+        changes = diff(before, offer_snapshot(offer))
         offer.save()
         if changes:
             action = (
@@ -375,7 +366,7 @@ def _apply_update_offer(request, organization, offer_id, data: OfferUpdateIn) ->
 @offers_router.patch("/{offer_id}", response=OfferOut)
 async def update_offer(request, offer_id: UUID, data: OfferUpdateIn):
     """Only the keys sent are applied. Also the pause and publish route."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return await sync_to_async(_apply_update_offer)(request, organization, offer_id, data)
 
 
@@ -396,7 +387,7 @@ def _apply_archive_offer(request, organization, offer: Offer) -> None:
 @offers_router.delete("/{offer_id}", response={204: None})
 async def delete_offer(request, offer_id: UUID):
     """A soft delete. Orders point at offers, and open ones are not affected."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     offer = await aget_object_or_404(org_offers(organization), public_id=offer_id)
     await sync_to_async(_apply_archive_offer)(request, organization, offer)
     return 204, None
@@ -437,7 +428,7 @@ def _apply_add_image(request, organization, offer: Offer, upload: UploadedFile):
 
 @offers_router.post("/{offer_id}/images", response={201: OfferImageOut})
 async def add_offer_image(request, offer_id: UUID, file: UploadedFile = File(...)):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     offer = await aget_object_or_404(org_offers(organization), public_id=offer_id)
     return 201, await sync_to_async(_apply_add_image)(request, organization, offer, file)
 
@@ -466,7 +457,7 @@ def _apply_delete_image(request, organization, offer: Offer, image: OfferImage) 
 
 @offers_router.delete("/{offer_id}/images/{image_id}", response={204: None})
 async def delete_offer_image(request, offer_id: UUID, image_id: UUID):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     offer = await aget_object_or_404(org_offers(organization), public_id=offer_id)
     image = await aget_object_or_404(offer.images.all(), public_id=image_id)
     await sync_to_async(_apply_delete_image)(request, organization, offer, image)

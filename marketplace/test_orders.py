@@ -249,6 +249,13 @@ class PlacingTests(MarketTestCase):
         offer.refresh_from_db()
         self.assertEqual(offer.quantity_available, Decimal("400.000"))
 
+    def test_a_retry_finds_its_order_after_taking_the_last_stock(self):
+        offer = self.make_offer(quantity_available=Decimal("100.000"))
+        first = self.place(offer, idempotency_key="tap")
+        second = self.place(offer, idempotency_key="tap")
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+
     def test_a_reused_key_for_another_offer_is_refused(self):
         self.place(self.make_offer(), idempotency_key="tap")
         response = self.place(self.make_offer(), idempotency_key="tap")
@@ -737,14 +744,27 @@ class NoMoneyLeftStrandedTests(MarketTestCase):
         day_after = order.acceptance_deadline.astimezone(ZoneInfo("Asia/Tashkent")).date()
         self.assertEqual(day_after, self.today + timedelta(days=4))
 
-    def test_marking_delivered_restarts_the_window_from_then(self):
+    def test_pressing_delivered_early_cannot_rush_the_buyer(self):
         order = self.order_at(
-            "dispatched", delivery_date=str(self.today + timedelta(days=3))
+            "dispatched", delivery_date=str(self.today + timedelta(days=7))
         )
-        before = order.acceptance_deadline
+        promised = order.acceptance_deadline
         self.step(order, "deliver")
         order.refresh_from_db()
-        self.assertLess(order.acceptance_deadline, before)
+        self.assertEqual(order.acceptance_deadline, promised)
+        self.assertEqual(jobs.run_all()["auto_accepted"], 0)
+        self.assertEqual(billing.wallet_balance(self.seller), Decimal("0.00"))
+
+    def test_a_late_delivery_still_gets_the_full_window(self):
+        order = self.order_at("dispatched")
+        Order.objects.filter(pk=order.pk).update(
+            acceptance_deadline=timezone.now() - timedelta(days=1)
+        )
+        self.step(order, "deliver")
+        order.refresh_from_db()
+        self.assertGreater(
+            order.acceptance_deadline, timezone.now() + timedelta(hours=5)
+        )
 
     def test_goods_never_sent_are_refunded_against_the_seller(self):
         offer = self.make_offer(available_from=self.today - timedelta(days=5))
@@ -899,6 +919,7 @@ class DatabaseGuardTests(MarketTestCase):
         self.assertIn("dispute_refund_within_amount", str(caught.exception))
 
 
+@override_settings(BILLING_MOCK_ENABLED=True)
 class ConcurrencyTests(TransactionTestCase):
     """Real transactions and threads: here the locks are what is under test."""
 
@@ -939,7 +960,7 @@ class ConcurrencyTests(TransactionTestCase):
     def place(self):
         return services.place_order(
             self.actor,
-            self.offer,
+            self.offer.public_id,
             quantity=Decimal("30.000"),
             delivery_date=self.today,
             delivery_method="pickup",

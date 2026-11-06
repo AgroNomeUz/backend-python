@@ -6,15 +6,11 @@ member fields the console's user list shows.
 
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, User
 
 P = OrgPermission
-
-
-def auth(user):
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class IamTests(TestCase):

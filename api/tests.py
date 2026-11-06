@@ -14,10 +14,12 @@ from datetime import timedelta
 from itertools import count
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from api.auth import create_access_token, create_signup_token
+from core.test_support import auth
 from api.models import PhoneOtp, RefreshToken
 from api.sms import mask_phone
 from core.models import ActivityLog
@@ -28,11 +30,6 @@ PHONE = "+998901234567"
 # Escape hatches are refused in production; most tests exercise the ordinary
 # path, so they pin the environment rather than inheriting the developer's.
 DEVELOPMENT = override_settings(ENVIRONMENT="development")
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class AuthTestCase(TestCase):
@@ -663,3 +660,113 @@ class LogoutTests(AuthTestCase):
         response = self.post("logout", {"refresh_token": self.session()})
 
         self.assertEqual(response.status_code, 401)
+
+
+@DEVELOPMENT
+class SmsAbuseTests(AuthTestCase):
+    """Every code sent costs money, and the caller controls most of the request."""
+
+    @override_settings(OTP_MAX_REQUESTS_PER_IP_PER_HOUR=1)
+    def test_a_made_up_address_does_not_dodge_the_limit(self):
+        # Only the last entry comes from our proxy; the rest are the caller's.
+        first = self.post(
+            "otp/request", {"phone": PHONE}, HTTP_X_FORWARDED_FOR="1.1.1.1, 9.9.9.9"
+        )
+        second = self.post(
+            "otp/request",
+            {"phone": "+998907654321"},
+            HTTP_X_FORWARDED_FOR="2.2.2.2, 9.9.9.9",
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    def test_only_uzbek_numbers_get_a_code(self):
+        for phone in ("+", "+1234567890123", "+99890123", "998901234567"):
+            response = self.post("otp/request", {"phone": phone})
+            self.assertEqual(response.status_code, 400, phone)
+        self.assertFalse(PhoneOtp.objects.exists())
+
+
+@DEVELOPMENT
+class OldCodeTests(AuthTestCase):
+    @override_settings(OTP_RESEND_COOLDOWN_SECONDS=0)
+    def test_using_the_newest_code_does_not_revive_an_older_one(self):
+        older = self.request_code()
+        newest = self.request_code()
+        self.assertEqual(
+            self.post("otp/verify", {"phone": PHONE, "code": newest}).status_code, 200
+        )
+        self.assertEqual(
+            self.post("otp/verify", {"phone": PHONE, "code": older}).status_code, 400
+        )
+
+
+class LoginLimitTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = User.objects.create_user(
+            username="victim", password="sekret-password-1", phone=PHONE
+        )
+
+    def login(self, password, username="victim"):
+        return self.post("login", {"username": username, "password": password})
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_guessing_stops_even_for_the_right_password(self):
+        for _ in range(3):
+            self.assertEqual(self.login("wrong").status_code, 401)
+        self.assertEqual(self.login("wrong").status_code, 429)
+        self.assertEqual(self.login("sekret-password-1").status_code, 429)
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_the_count_follows_the_account_not_the_spelling(self):
+        for spelling in ("victim", PHONE, "+998 90 123-45-67"):
+            self.assertEqual(self.login("wrong", spelling).status_code, 401)
+        self.assertEqual(self.login("wrong", PHONE).status_code, 429)
+
+    @override_settings(LOGIN_MAX_FAILURES=3)
+    def test_a_success_clears_the_count(self):
+        self.login("wrong")
+        self.login("wrong")
+        self.assertEqual(self.login("sekret-password-1").status_code, 200)
+        self.login("wrong")
+        self.login("wrong")
+        self.assertEqual(self.login("sekret-password-1").status_code, 200)
+
+
+class TemporaryPasswordTests(AuthTestCase):
+    def setUp(self):
+        super().setUp()
+        owner = self.make_org()
+        self.member = User.objects.create_user(
+            username="new-hire",
+            password="given-by-admin-1",
+            organization=owner.organization,
+            must_change_password=True,
+        )
+
+    def get(self, path):
+        return self.client.get(f"/api/v1/{path}", **auth(self.member))
+
+    def test_a_temporary_password_opens_nothing_else(self):
+        self.assertEqual(self.get("org").status_code, 403)
+        self.assertEqual(self.get("favorites").status_code, 403)
+
+    def test_it_still_reaches_what_it_needs_to_finish_signing_in(self):
+        self.assertEqual(self.get("users/me").status_code, 200)
+        self.assertEqual(self.get("members/me").status_code, 200)
+
+    def test_choosing_a_password_opens_the_account(self):
+        changed = self.client.post(
+            "/api/v1/auth/password/change",
+            data={
+                "current_password": "given-by-admin-1",
+                "new_password": "my-own-password-9",
+            },
+            content_type="application/json",
+            **auth(self.member),
+        )
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(self.get("org").status_code, 200)

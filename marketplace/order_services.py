@@ -15,11 +15,13 @@ the same operations with nobody logged in.
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F, Sum
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from ninja.errors import HttpError
 
@@ -40,6 +42,7 @@ from .models import (
     Quote,
     Side,
     SupplyContract,
+    active_offer_q,
     market_today,
 )
 
@@ -63,14 +66,6 @@ class Actor:
 
 
 SYSTEM = Actor(context={"source": "system"})
-
-
-def billing_call(function, *args, **kwargs):
-    """Run a billing service, turning its error into an HTTP answer."""
-    try:
-        return function(*args, **kwargs)
-    except billing.BillingError as exc:
-        raise HttpError(exc.status, exc.message)
 
 
 def line_total(quantity: Decimal, unit_price: Decimal) -> Decimal:
@@ -167,7 +162,7 @@ def _release_stock(order: Order) -> None:
 
 def place_order(
     actor: Actor,
-    offer: Offer,
+    offer_id: UUID,
     *,
     quantity: Decimal,
     delivery_date,
@@ -183,10 +178,14 @@ def place_order(
             customer_organization=customer, idempotency_key=idempotency_key
         ).first()
         if existing is not None:
-            if existing.offer_id != offer.pk:
+            if existing.offer.public_id != offer_id:
                 raise HttpError(409, "That idempotency key was used for another offer.")
             return existing
 
+    offer = get_object_or_404(
+        Offer.objects.filter(active_offer_q()).select_related("organization", "product"),
+        public_id=offer_id,
+    )
     if offer.organization_id == customer.pk:
         raise HttpError(400, "You cannot order from your own organization.")
     if expected_unit_price is not None and expected_unit_price != offer.price:
@@ -269,12 +268,13 @@ def order_from_quote(
     they add up to what the buyer asked for.
     """
     with transaction.atomic():
+        # Request first: closing a request locks it and then touches its quotes.
+        request = PurchaseRequest.objects.select_for_update().get(pk=quote.request_id)
         quote = (
             Quote.objects.select_for_update(of=("self",))
             .select_related("provider_organization", "request", "request__product")
             .get(pk=quote.pk)
         )
-        request = PurchaseRequest.objects.select_for_update().get(pk=quote.request_id)
         if quote.status != Quote.Status.SUBMITTED:
             raise HttpError(409, "This quote is no longer open.")
         if quote.valid_until < market_today():
@@ -428,7 +428,7 @@ def _close_without_delivery(
 ) -> None:
     """The ways an order ends unfulfilled. Stock and money both go back."""
     if order.hold_id:
-        billing_call(billing.refund_remaining, order.hold)
+        billing.refund_remaining(order.hold)
     _release_stock(order)
     _move(
         order,
@@ -474,7 +474,7 @@ def pay_from_wallet(actor: Actor, order: Order) -> Order:
     with transaction.atomic():
         order = _locked(order)
         _require_payable(order)
-        billing_call(_hold_from_wallet, order, actor)
+        _hold_from_wallet(order, actor)
     return order
 
 
@@ -486,8 +486,7 @@ def pay_through_gateway(actor: Actor, order: Order) -> Payment:
     """
     with transaction.atomic():
         _require_payable(_locked(order))
-    return billing_call(
-        billing.start_payment,
+    return billing.start_payment(
         organization=order.customer_organization,
         amount=order.subtotal,
         purpose=Payment.Purpose.ORDER,
@@ -528,8 +527,7 @@ def _deadline_after_dispatch(delivery_date) -> datetime:
 
     Dispatched goods need a clock too. A seller who forgets to press "delivered"
     and a buyer who says nothing would otherwise leave the money in escrow for
-    good, with neither side able to cancel. This gives a seller nothing they
-    could not already get by pressing "delivered" early.
+    good, with neither side able to cancel.
     """
     zone = ZoneInfo(settings.MARKET_TIME_ZONE)
     end_of_day = datetime.combine(delivery_date + timedelta(days=1), time.min, tzinfo=zone)
@@ -554,13 +552,21 @@ def dispatch_order(actor: Actor, order: Order) -> Order:
 @transaction.atomic
 def deliver_order(actor: Actor, order: Order) -> Order:
     order = _locked(order)
+    if order.status != Status.DISPATCHED:
+        raise HttpError(409, "This order has not been dispatched.")
     now = timezone.now()
     _move(
         order,
         Status.DELIVERED,
         actor,
         delivered_at=now,
-        acceptance_deadline=now + timedelta(hours=settings.ORDER_ACCEPTANCE_HOURS),
+        # Never earlier than dispatch set it. Otherwise a seller could press
+        # this days before the delivery date and be paid before anything
+        # was due, while the buyer has no reason to look.
+        acceptance_deadline=max(
+            order.acceptance_deadline,
+            now + timedelta(hours=settings.ORDER_ACCEPTANCE_HOURS),
+        ),
     )
     return order
 
@@ -607,7 +613,7 @@ def accept_order(actor: Actor, order: Order) -> Order:
     order = _locked(order)
     if order.status not in (Status.DISPATCHED, Status.DELIVERED):
         raise HttpError(409, "This order is not waiting for acceptance.")
-    billing_call(billing.release_hold, order.hold, order.subtotal)
+    billing.release_hold(order.hold, order.subtotal)
     _settle(order, actor, accepted_quantity=order.quantity)
     return order
 
@@ -641,7 +647,7 @@ def reject_order(
         raise HttpError(400, "That leaves nothing in dispute: accept it instead.")
 
     if accepted_value > 0:
-        billing_call(billing.release_hold, order.hold, accepted_value)
+        billing.release_hold(order.hold, accepted_value)
     OrderDispute.objects.create(
         order=order,
         reason=reason,
@@ -675,7 +681,7 @@ def concede_dispute(actor: Actor, order: Order) -> Order:
     """The seller agrees with the buyer: everything still held goes back."""
     order = _locked(order)
     dispute = _open_dispute(order)
-    billing_call(billing.refund_hold, order.hold, dispute.disputed_amount)
+    billing.refund_hold(order.hold, dispute.disputed_amount)
     dispute.status = OrderDispute.Status.CONCEDED
     dispute.refund_amount = dispute.disputed_amount
     dispute.resolved_by = actor.user
@@ -697,9 +703,9 @@ def resolve_dispute(
 
     to_seller = dispute.disputed_amount - refund_amount
     if refund_amount > 0:
-        billing_call(billing.refund_hold, order.hold, refund_amount)
+        billing.refund_hold(order.hold, refund_amount)
     if to_seller > 0:
-        billing_call(billing.release_hold, order.hold, to_seller)
+        billing.release_hold(order.hold, to_seller)
 
     dispute.status = OrderDispute.Status.RESOLVED
     dispute.refund_amount = refund_amount

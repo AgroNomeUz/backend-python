@@ -15,8 +15,10 @@ from datetime import timedelta
 
 import jwt
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.contrib.auth import aauthenticate
 from django.contrib.auth.password_validation import validate_password
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.http import HttpResponse
@@ -24,6 +26,7 @@ from django.utils import timezone
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
+from billing.services import BillingError
 from billing.views import billing_router
 from core.audit import client_ip, diff, request_context, snapshot
 from core.models import ActivityLog
@@ -43,7 +46,7 @@ from marketplace.request_api import quotes_router, requests_router
 from users.models import Organization, Region, User
 from users.organizations import organizations_router
 from users.profile import ORG_AUDIT_FIELDS, me_router, org_router, user_payload
-from users.services import normalize_phone, username_for_phone
+from users.services import is_uzbek_phone, normalize_phone, username_for_phone
 from users.iam import iam_router
 from users.views import members_router
 from .auth import (
@@ -286,6 +289,8 @@ async def otp_request(request, data: OtpRequestIn):
     phone = normalize_phone(data.phone)
     if not phone:
         raise HttpError(400, "A phone number is required")
+    if not is_uzbek_phone(phone):
+        raise HttpError(400, "Enter a phone number like +998901234567")
 
     try:
         issued = await _issue_otp_async(phone, client_ip(request))
@@ -378,9 +383,18 @@ async def login(request, data: LoginIn, response: HttpResponse):
         if found is not None:
             identifier = found.username
 
+    # shortcut: the default cache is per process, so the real limit is this
+    # times the worker count. Move it to a shared store if that stops being enough.
+    failures_key = f"login-failures:{identifier}"
+    failures = await cache.aget(failures_key, 0)
+    if failures >= settings.LOGIN_MAX_FAILURES:
+        raise HttpError(429, "Too many failed attempts. Try again later, or use a code.")
+
     user = await aauthenticate(request, username=identifier, password=data.password)
     if user is None:
+        await cache.aset(failures_key, failures + 1, settings.LOGIN_LOCKOUT_SECONDS)
         raise HttpError(401, "Invalid credentials")
+    await cache.adelete(failures_key)
     if not user.is_active:
         raise HttpError(403, "Account is disabled")
 
@@ -440,6 +454,11 @@ REFRESH_GRACE = timedelta(seconds=30)
 
 class RefreshRefused(Exception):
     """A cookie-borne refresh token was rejected: answer 401 and clear it."""
+
+
+@api.exception_handler(BillingError)
+def _billing_error(request, exc):
+    return api.create_response(request, {"detail": exc.message}, status=exc.status)
 
 
 @api.exception_handler(RefreshRefused)

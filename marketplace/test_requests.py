@@ -7,7 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from core.models import ActivityLog
-from marketplace.models import Order, PurchaseRequest, Quote
+from marketplace.models import Order, Product, PurchaseRequest, Quote
 from users.models import OrgPermission
 
 from .test_support import MarketTestCase, make_org
@@ -127,6 +127,15 @@ class QuoteTests(RequestTestCase):
     def test_you_cannot_quote_on_your_own_request(self):
         data = self.make_request()
         self.assertEqual(self.quote(data["id"], self.buyer_owner).status_code, 400)
+
+    def test_regulated_goods_need_a_verified_seller_here_too(self):
+        beef = Product.objects.create(
+            category=self.vegetables, name="Beef", slug="beef", is_regulated=True
+        )
+        data = self.make_request(product_id=str(beef.public_id))
+        self.assertFalse(self.outsider.is_verified)
+        self.assertEqual(self.quote(data["id"], self.outsider_owner).status_code, 403)
+        self.assertEqual(self.quote(data["id"]).status_code, 201)
 
     def test_one_live_quote_per_seller(self):
         data = self.make_request()

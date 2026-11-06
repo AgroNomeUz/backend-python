@@ -362,7 +362,6 @@ class LedgerTransaction(PublicIdModel):
         blank=True,
         related_name="transactions",
     )
-    memo = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

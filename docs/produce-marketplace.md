@@ -16,7 +16,7 @@ This sits beside the machinery marketplace, not on top of it: `listings`,
 | Order vs delivery | **One model.** A contract generates one `Order` per scheduled delivery | One state machine, one escrow path, one dispute flow — no second system for recurring orders |
 | Who holds money | A licensed provider, in the real deployment. Our ledger records and instructs | Holding customer funds ourselves needs a licence. **Check with a lawyer before going live.** |
 | Provider integration | `billing/gateway.py` is the seam; `MockGateway` behind it | Same approach as `api/sms.py`. Real Payme/Click/Uzum is a new class there |
-| Mock in production | **Refused.** The mock can mint money, so `ENVIRONMENT=production` disables it | Same rule as `OTP_ECHO_CODES` |
+| Mock provider | **Off unless `BILLING_MOCK_ENABLED=true`**, and never with `ENVIRONMENT=production` | The mock can mint money, so forgetting a setting must leave it off. Same rule as `OTP_ECHO_CODES` |
 | Commission | A percentage, charged to the seller, on released goods value only; snapshotted on each hold | Rejected goods earn nothing. A later rate change never rewrites an open order |
 | Commission rate | **Placeholder:** 1.5% spot, 1.0% contract (`BILLING_COMMISSION_RATE`, `BILLING_CONTRACT_COMMISSION_RATE`) | Set the real numbers once provider fees are known |
 | Cash on delivery | **Not supported** | The whole point of holding funds is that deals stay on the platform |
@@ -95,9 +95,12 @@ pending_confirmation ─ confirm ─> awaiting_payment ─ pay ─> paid ─ dis
 | `awaiting_payment`, past `pay_by` | Expires, stock returns | Buyer |
 | `paid`, over `ORDER_DISPATCH_GRACE_DAYS` after the delivery date | Refunded | Seller |
 | `dispatched`, once the delivery day and the window are over | Accepted, seller paid | Nobody |
-| `delivered`, `ORDER_ACCEPTANCE_HOURS` after delivery | Accepted, seller paid | Nobody |
+| `delivered`, once the delivery day and the window are over, or `ORDER_ACCEPTANCE_HOURS` after delivery if that is later | Accepted, seller paid | Nobody |
 
 A `disputed` order is the one state that waits for a person, in the staff queue.
+
+Marking an order delivered early never brings the buyer's deadline forward.
+Otherwise a seller could be paid days before anything was due.
 
 ## Contracts
 
@@ -134,7 +137,8 @@ refunded.
 | `billing.manage` / `billing.view` | Paying, topping up, payout destinations, withdrawals; reading the wallet |
 
 New codes are not backfilled onto existing staff: nobody gains access to money
-by deploying this. Adding a payout destination also needs a one-time code, and a
+by deploying this. Nobody can grant a code they lack, or take over the account
+of someone who holds one. Adding a payout destination also needs a one-time code, and a
 new destination cannot receive money for `BILLING_PAYOUT_COOLDOWN_HOURS`,
 because a changed payout account is the classic way to steal a seller's money.
 

@@ -26,7 +26,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 
-from api.auth import create_access_token
+from core.test_support import auth
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingView
@@ -34,11 +34,6 @@ from users.models import OrgPermission, Organization, Region, User
 
 LANDING = "/api/v1/stats/landing"
 OWNER = "/api/v1/stats/owner"
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class StatsTestCase(TestCase):

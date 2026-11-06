@@ -9,12 +9,12 @@ books still agree, so any test that moves money also tests the ledger.
 """
 
 import json
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from api.auth import create_access_token
+from core.test_support import auth
 from billing import gateway as gateways
 from billing import services as billing
 from billing.models import Payment
@@ -29,10 +29,6 @@ from marketplace.models import (
     market_today,
 )
 from users.models import Organization, Region, User
-
-
-def auth(user: User) -> dict:
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 def make_org(slug: str, region: Region, **fields) -> tuple[Organization, User]:
@@ -63,6 +59,7 @@ def settle_payment(payment: Payment) -> None:
     billing.process_event("mock", event)
 
 
+@override_settings(BILLING_MOCK_ENABLED=True)
 class MarketTestCase(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -104,11 +101,12 @@ class MarketTestCase(TestCase):
     def patch(self, path, data, user=None):
         return self.call("patch", path, data, user)
 
-    def member(self, *codes, org=None) -> User:
+    def member(self, *codes, org=None, must_change=False) -> User:
         return User.objects.create_user(
             username=f"member-{User.objects.count()}",
             organization=org or self.buyer,
             permissions=sorted(code.value for code in codes),
+            must_change_password=must_change,
         )
 
     # ── fixtures ─────────────────────────────────────────────────────────────
@@ -196,6 +194,3 @@ class MarketTestCase(TestCase):
         self.assertEqual(accepted.status_code, 200, accepted.content)
         return SupplyContract.objects.get(public_id=contract_id)
 
-
-def days_from(start: date, days: int) -> date:
-    return start + timedelta(days=days)

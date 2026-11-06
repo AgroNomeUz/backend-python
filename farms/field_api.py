@@ -32,9 +32,9 @@ from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
 from users.models import OrgPermission, Organization
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
-from .common import describe_geometry, geometry_from_geojson, writable_organization
+from .common import describe_geometry, geometry_from_geojson
 from .external_refs import add_reference_routes, attach_references, references_of
 from .field_schemas import (
     BoundaryIn,
@@ -221,7 +221,7 @@ async def create_field(request, data: FieldIn):
     Add a field to one of the caller's farms. An optional `boundary` (GeoJSON
     Polygon or MultiPolygon) becomes the field's first boundary.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     field = await sync_to_async(_apply_create_field)(request, organization, data)
     await attach_references([field])
     return 201, field
@@ -275,7 +275,7 @@ async def update_field(request, field_id: UUID, data: FieldUpdateIn):
     Partial update, only the keys present are applied. `area: null` clears the
     stored area. The boundary changes through `POST /fields/{id}/boundaries`.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     field = await aget_object_or_404(org_fields(organization), public_id=field_id)
     field = await sync_to_async(_apply_update_field)(request, organization, field, data)
     await attach_references([field])
@@ -304,7 +304,7 @@ def _apply_delete_field(request, organization, field: Field) -> None:
 @fields_router.delete("/{field_id}", response={204: None})
 async def delete_field(request, field_id: UUID):
     """Remove a field and its boundary history. Refused while it has crop zones."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     field = await aget_object_or_404(org_fields(organization), public_id=field_id)
     await sync_to_async(_apply_delete_field)(request, organization, field)
     return 204, None
@@ -384,7 +384,7 @@ async def add_boundary(request, field_id: UUID, data: BoundaryIn):
     start, or inside an earlier closed range, is a 400. The area is computed
     from the geometry, in hectares.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     field = await aget_object_or_404(org_fields(organization), public_id=field_id)
     boundary = await sync_to_async(_apply_add_boundary)(
         request, organization, field, data
@@ -542,7 +542,7 @@ def _apply_create_crop_zone(request, organization, data: CropZoneIn) -> CropZone
 @crop_zones_router.post("", response={201: CropZoneOut})
 async def create_crop_zone(request, data: CropZoneIn):
     """Plant a crop on one of the caller's fields in one of its seasons."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     zone = await sync_to_async(_apply_create_crop_zone)(request, organization, data)
     await attach_references([zone])
     return 201, zone
@@ -621,7 +621,7 @@ def _apply_update_crop_zone(
 @crop_zones_router.patch("/{zone_id}", response=CropZoneOut)
 async def update_crop_zone(request, zone_id: UUID, data: CropZoneUpdateIn):
     """Partial update, only the keys present are applied."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     zone = await aget_object_or_404(org_crop_zones(organization), public_id=zone_id)
     zone = await sync_to_async(_apply_update_crop_zone)(
         request, organization, zone, data
@@ -648,7 +648,7 @@ def _apply_delete_crop_zone(request, organization, zone: CropZone) -> None:
 
 @crop_zones_router.delete("/{zone_id}", response={204: None})
 async def delete_crop_zone(request, zone_id: UUID):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     zone = await aget_object_or_404(org_crop_zones(organization), public_id=zone_id)
     await sync_to_async(_apply_delete_crop_zone)(request, organization, zone)
     return 204, None

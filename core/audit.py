@@ -49,7 +49,10 @@ def request_context(request) -> dict:
     meta = getattr(request, "META", {}) or {}
     forwarded = meta.get("HTTP_X_FORWARDED_FOR", "")
     return {
-        "ip": (forwarded.split(",")[0].strip() if forwarded else meta.get("REMOTE_ADDR")),
+        # The last entry is the one our proxy added. Everything before it is
+        # whatever the caller chose to send.
+        # shortcut: assumes exactly one proxy in front; with two, use the second to last.
+        "ip": (forwarded.split(",")[-1].strip() if forwarded else meta.get("REMOTE_ADDR")),
         "user_agent": meta.get("HTTP_USER_AGENT", "")[:255],
         "method": getattr(request, "method", ""),
         "path": getattr(request, "path", ""),

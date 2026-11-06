@@ -45,9 +45,9 @@ from api.auth import OptionalJWTBearer, authenticated_user
 from core.audit import diff, log_activity, request_context, snapshot
 from core.models import ActivityLog
 from equipment.models import Asset
-from equipment.views import _category_q, _size_class_filter, writable_organization
+from equipment.views import _category_q, _size_class_filter
 from users.models import OrgPermission, Organization, Region
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
 from .models import IMAGE_EXTENSIONS, Listing, ListingImage, ListingView, active_listings
 from .schemas import (
@@ -386,7 +386,7 @@ async def create_listing(request, data: ListingCreateIn):
     changes nothing about the asset, and the same asset can carry a rental
     offer and a sale offer at once.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await sync_to_async(_apply_create_listing)(request, organization, data)
     return 201, listing
 
@@ -489,11 +489,20 @@ async def get_listing(request, listing_id: UUID):
     return listing
 
 
+@transaction.atomic
 def _apply_update_listing(request, organization, listing: Listing, data: ListingUpdateIn):
-    """Sync transactional core of `update_listing`."""
+    """
+    Sync transactional core of `update_listing`.
+
+    Waits for the row and reads it again, because `listing` was read before
+    this transaction: saving that copy could undo a sale confirmed since.
+    """
     fields = data.dict(exclude_unset=True)
     if not fields:
         return listing
+
+    Listing.objects.select_for_update().get(pk=listing.pk)
+    listing = org_listings(organization).get(pk=listing.pk)
 
     # `exclude_unset` keeps a key the caller sent explicitly as `null`, and
     # every column here but `region` is NOT NULL — so without this a valid
@@ -576,7 +585,7 @@ async def update_listing(request, listing_id: UUID, data: ListingUpdateIn):
     is a field on the listing, which is exactly what having a separate model
     buys (§0.5).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     return await sync_to_async(_apply_update_listing)(
         request, organization, listing, data
@@ -607,7 +616,7 @@ async def delete_listing(request, listing_id: UUID):
     listings, and hard-deleting would tear a hole in the organization's own
     history; the asset it points at is untouched either way.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     await sync_to_async(_apply_archive_listing)(request, organization, listing)
     return 204, None
@@ -704,7 +713,7 @@ async def add_listing_image(request, listing_id: UUID, file: UploadedFile = File
     on local disk for now; the URL that comes back is absolute, so moving to
     object storage later is not a change to this contract (§0b).
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     return 201, await sync_to_async(_apply_add_image)(
         request, organization, listing, file
@@ -742,7 +751,7 @@ def _apply_delete_image(request, organization, listing: Listing, image: ListingI
 @listings_router.delete("/{listing_id}/images/{image_id}", response={204: None})
 async def delete_listing_image(request, listing_id: UUID, image_id: UUID):
     """Remove a photo. If it was the card image, the next one takes over."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_EQUIPMENT)
     listing = await aget_object_or_404(org_listings(organization), public_id=listing_id)
     image = await aget_object_or_404(listing.images.all(), public_id=image_id)
     await sync_to_async(_apply_delete_image)(request, organization, listing, image)

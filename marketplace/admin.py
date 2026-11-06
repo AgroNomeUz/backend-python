@@ -7,6 +7,8 @@ the state machine and the ledger. Disputes are settled through
 
 from django.contrib import admin
 
+from core.admin import ReadOnlyAdmin
+
 from .models import (
     ContractTerms,
     Offer,
@@ -18,17 +20,6 @@ from .models import (
     Quote,
     SupplyContract,
 )
-
-
-class ReadOnlyAdmin(admin.ModelAdmin):
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(ProductCategory)

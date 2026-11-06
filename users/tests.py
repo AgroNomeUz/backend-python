@@ -19,7 +19,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from api.models import PhoneOtp
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
@@ -27,11 +27,6 @@ from listings.models import Listing
 from users.management.commands.seed_regions import REGIONS
 from users.models import OrgPermission, Organization, Region, User
 from users.services import normalize_phone
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class NormalizePhoneTests(TestCase):
@@ -1028,3 +1023,90 @@ class NoOrganizationUserTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.user.refresh_from_db()
         self.assertEqual(self.user.full_name, "")
+
+
+class PermissionEscalationTests(TestCase):
+    """`users.manage` must not be a way to reach what its holder was not given."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = User.objects.create_user(username="esc-owner")
+        cls.org = Organization.objects.create(name="Esc Org", owner=cls.owner)
+        cls.owner.organization = cls.org
+        cls.owner.save(update_fields=["organization"])
+        cls.admin = User.objects.create_user(
+            username="esc-admin",
+            organization=cls.org,
+            permissions=[OrgPermission.MANAGE_USERS.value],
+        )
+        cls.finance = User.objects.create_user(
+            username="esc-finance",
+            organization=cls.org,
+            phone="+998901110000",
+            permissions=[OrgPermission.MANAGE_BILLING.value],
+        )
+        cls.plain = User.objects.create_user(username="esc-plain", organization=cls.org)
+
+    def call(self, method, path, data, user=None):
+        return getattr(self.client, method)(
+            f"/api/v1/members{path}",
+            data=data,
+            content_type="application/json",
+            **auth(user or self.admin),
+        )
+
+    def test_a_new_account_cannot_hold_more_than_its_creator(self):
+        response = self.call(
+            "post", "", {"email": "pawn@example.com", "permissions": ["billing.manage"]}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(email="pawn@example.com").exists())
+
+    def test_an_admin_can_pass_on_what_they_hold(self):
+        response = self.call(
+            "post", "", {"email": "peer@example.com", "permissions": ["users.manage"]}
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_an_existing_member_cannot_be_raised_above_the_admin(self):
+        response = self.call(
+            "patch", f"/{self.plain.public_id}", {"permissions": ["billing.manage"]}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_codes_a_member_already_has_can_stay(self):
+        response = self.call(
+            "patch",
+            f"/{self.finance.public_id}",
+            {"permissions": ["billing.manage", "users.manage"]},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_taking_a_code_away_is_allowed(self):
+        response = self.call("patch", f"/{self.finance.public_id}", {"permissions": []})
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_the_password_of_someone_who_outranks_you_is_off_limits(self):
+        response = self.call("post", f"/{self.finance.public_id}/reset-password", {})
+        self.assertEqual(response.status_code, 403)
+
+    def test_so_is_their_phone_which_is_also_a_login(self):
+        response = self.call(
+            "patch", f"/{self.finance.public_id}", {"phone": "+998902220000"}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.finance.refresh_from_db()
+        self.assertEqual(self.finance.phone, "+998901110000")
+
+    def test_someone_below_you_can_still_be_helped(self):
+        response = self.call("post", f"/{self.plain.public_id}/reset-password", {})
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_the_owner_can_grant_anything(self):
+        response = self.call(
+            "patch",
+            f"/{self.plain.public_id}",
+            {"permissions": ["billing.manage"]},
+            self.owner,
+        )
+        self.assertEqual(response.status_code, 200, response.content)

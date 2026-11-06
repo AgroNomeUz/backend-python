@@ -23,11 +23,15 @@ from ninja.errors import HttpError
 from ninja.pagination import LimitOffsetPagination, paginate
 
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import (
+    caller_organization,
+    readable_organization,
+    require_perm,
+    writable_organization,
+)
 
 from . import order_services as services
-from .models import Offer, Order, OrderDispute, Side, active_offer_q
-from .offer_api import writable_organization
+from .models import Order, OrderDispute, Side
 from .schemas import (
     DisputeResolveIn,
     OrderConfirmIn,
@@ -89,7 +93,7 @@ def _run(request, organization, side, operation, order, *args, **kwargs) -> Orde
 
 
 async def _as_provider(request, order_id, operation, *args, **kwargs) -> Order:
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     order = await _order_as(Side.PROVIDER, organization, order_id)
     return await sync_to_async(_run)(
         request, organization, Side.PROVIDER, operation, order, *args, **kwargs
@@ -97,7 +101,7 @@ async def _as_provider(request, order_id, operation, *args, **kwargs) -> Order:
 
 
 async def _as_customer(request, order_id, operation, *args, **kwargs) -> Order:
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     order = await _order_as(Side.CUSTOMER, organization, order_id)
     return await sync_to_async(_run)(
         request, organization, Side.CUSTOMER, operation, order, *args, **kwargs
@@ -134,11 +138,11 @@ async def list_orders(
     return order_relations(qs)
 
 
-def _apply_place_order(request, organization, offer: Offer, data: OrderCreateIn) -> Order:
+def _apply_place_order(request, organization, data: OrderCreateIn) -> Order:
     actor = services.Actor.from_request(request, organization, Side.CUSTOMER)
     order = services.place_order(
         actor,
-        offer,
+        data.offer_id,
         quantity=data.quantity,
         delivery_date=data.delivery_date,
         delivery_method=data.delivery_method,
@@ -156,16 +160,8 @@ async def place_order(request, data: OrderCreateIn):
     Buy from an offer. Reserves the stock and asks the seller to confirm; the
     buyer pays once they have.
     """
-    organization = writable_organization(request)
-    offer = await aget_object_or_404(
-        Offer.objects.filter(active_offer_q()).select_related(
-            "organization", "product"
-        ),
-        public_id=data.offer_id,
-    )
-    return 201, await sync_to_async(_apply_place_order)(
-        request, organization, offer, data
-    )
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
+    return 201, await sync_to_async(_apply_place_order)(request, organization, data)
 
 
 @orders_router.get("/{order_id}", response=OrderDetailOut)
@@ -261,7 +257,7 @@ async def reject_order(request, order_id: UUID, data: OrderRejectIn):
 @orders_router.post("/{order_id}/cancel", response=OrderDetailOut)
 async def cancel_order(request, order_id: UUID, data: ReasonIn):
     """Before dispatch, by either side. A paid order is refunded in full."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     order = await aget_object_or_404(org_orders(organization), public_id=order_id)
     side = (
         Side.PROVIDER

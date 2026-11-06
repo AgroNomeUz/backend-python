@@ -15,7 +15,7 @@ from ninja import Router
 from ninja.pagination import LimitOffsetPagination, paginate
 
 from users.models import OrgPermission, Organization
-from users.permissions import caller_organization, readable_organization, require_perm
+from users.permissions import readable_organization, writable_organization
 
 from . import contract_services as services
 from .models import Offer, Quote, Side, SupplyContract, active_offer_q
@@ -31,12 +31,6 @@ from .schemas import (
 )
 
 contracts_router = Router(tags=["Market contracts"])
-
-
-def writable_organization(request) -> Organization:
-    organization = caller_organization(request)
-    require_perm(request, OrgPermission.MANAGE_CONTRACTS)
-    return organization
 
 
 def contract_relations(queryset):
@@ -105,7 +99,7 @@ async def propose_contract(request, data: ContractCreateIn):
     The buyer proposes, from an `offer_id` or a `quote_id`. Nothing binds anyone
     until the seller accepts.
     """
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_CONTRACTS)
     return 201, await sync_to_async(_apply_propose)(request, organization, data)
 
 
@@ -135,7 +129,7 @@ def _act(request, organization, contract, operation, *args) -> SupplyContract:
 
 
 async def _write(request, contract_id: UUID, operation, *args) -> SupplyContract:
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_CONTRACTS)
     contract = await aget_object_or_404(org_contracts(organization), public_id=contract_id)
     return await sync_to_async(_act)(request, organization, contract, operation, *args)
 

@@ -51,7 +51,7 @@ from .schemas import (
     PhoneChangeVerifyIn,
     SelfUpdateIn,
 )
-from .services import normalize_phone
+from .services import is_uzbek_phone, normalize_phone
 from .views import check_phone_available, log_member_activity, member_snapshot
 
 me_router = Router(tags=["Profile"])
@@ -232,6 +232,8 @@ def _check_new_phone(user: User, raw: str | None) -> str:
     phone = normalize_phone(raw)
     if not phone:
         raise HttpError(400, "A phone number is required")
+    if not is_uzbek_phone(phone):
+        raise HttpError(400, "Enter a phone number like +998901234567")
     if phone == user.phone:
         raise HttpError(400, "This is already your phone number")
     check_phone_available(phone, exclude=user)

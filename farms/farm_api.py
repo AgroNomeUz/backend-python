@@ -25,9 +25,9 @@ from core.models import ActivityLog
 from core.schemas import ActivityLogOut
 from core.views import org_activity
 from users.models import OrgPermission, Organization, Region
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
-from .common import geometry_from_geojson, writable_organization
+from .common import geometry_from_geojson
 from .external_refs import add_reference_routes, attach_references, references_of
 from .farm_schemas import (
     ClusterIn,
@@ -100,7 +100,7 @@ def _apply_create_cluster(request, organization, data: ClusterIn) -> FarmCluster
 
 @clusters_router.post("", response={201: ClusterOut})
 async def create_cluster(request, data: ClusterIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     cluster = await sync_to_async(_apply_create_cluster)(request, organization, data)
     return 201, cluster
 
@@ -142,7 +142,7 @@ def _apply_update_cluster(request, organization, cluster, data: ClusterUpdateIn)
 
 @clusters_router.patch("/{cluster_id}", response=ClusterOut)
 async def update_cluster(request, cluster_id: UUID, data: ClusterUpdateIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     cluster = await aget_object_or_404(
         org_clusters(organization), public_id=cluster_id
     )
@@ -178,7 +178,7 @@ def _apply_delete_cluster(request, organization, cluster) -> None:
 @clusters_router.delete("/{cluster_id}", response={204: None})
 async def delete_cluster(request, cluster_id: UUID):
     """Remove a cluster. Its farms stay, with no cluster."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     cluster = await aget_object_or_404(
         org_clusters(organization), public_id=cluster_id
     )
@@ -314,7 +314,7 @@ def _apply_create_farm(request, organization, data: FarmIn) -> Farm:
 
 @farms_router.post("", response={201: FarmOut})
 async def create_farm(request, data: FarmIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     farm = await sync_to_async(_apply_create_farm)(request, organization, data)
     await attach_references([farm])
     return 201, farm
@@ -371,7 +371,7 @@ def _apply_update_farm(request, organization, farm: Farm, data: FarmUpdateIn) ->
 @farms_router.patch("/{farm_id}", response=FarmOut)
 async def update_farm(request, farm_id: UUID, data: FarmUpdateIn):
     """Partial update: only the keys present in the body are applied."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     farm = await aget_object_or_404(org_farms(organization), public_id=farm_id)
     farm = await sync_to_async(_apply_update_farm)(request, organization, farm, data)
     await attach_references([farm])
@@ -400,7 +400,7 @@ def _apply_delete_farm(request, organization, farm: Farm) -> None:
 @farms_router.delete("/{farm_id}", response={204: None})
 async def delete_farm(request, farm_id: UUID):
     """Remove a farm. A farm that still has fields must be emptied first."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     farm = await aget_object_or_404(org_farms(organization), public_id=farm_id)
     await sync_to_async(_apply_delete_farm)(request, organization, farm)
     return 204, None
@@ -469,7 +469,7 @@ def _apply_create_season(request, organization, data: SeasonIn) -> Season:
 
 @seasons_router.post("", response={201: SeasonOut})
 async def create_season(request, data: SeasonIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     season = await sync_to_async(_apply_create_season)(request, organization, data)
     return 201, season
 
@@ -510,7 +510,7 @@ def _apply_update_season(request, organization, season, data: SeasonUpdateIn):
 
 @seasons_router.patch("/{season_id}", response=SeasonOut)
 async def update_season(request, season_id: UUID, data: SeasonUpdateIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     season = await aget_object_or_404(org_seasons(organization), public_id=season_id)
     return await sync_to_async(_apply_update_season)(
         request, organization, season, data
@@ -536,7 +536,7 @@ def _apply_delete_season(request, organization, season) -> None:
 
 @seasons_router.delete("/{season_id}", response={204: None})
 async def delete_season(request, season_id: UUID):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_FARMS)
     season = await aget_object_or_404(org_seasons(organization), public_id=season_id)
     await sync_to_async(_apply_delete_season)(request, organization, season)
     return 204, None

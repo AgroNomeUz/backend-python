@@ -119,11 +119,15 @@ telemetry/      High-volume GPS / ISOBUS / manufacturer-API ingestion.
 ### Start services
 
 ```bash
-docker-compose up --build
+docker compose -f docker-compose.local.yml up --build   # development
+docker compose up --build -d                            # production
 ```
 
-The Django dev server starts on **http://localhost:8000**.  
-Interactive API docs: **http://localhost:8000/api/docs**
+Both listen on **http://localhost:8081**. Interactive API docs: **/api/v1/docs**.
+
+The local file runs Django's dev server, mounts the code and turns the mock
+payment provider on. The main file runs uvicorn with four workers and keeps
+uploads in a volume. Set `ENVIRONMENT=production` there.
 
 ### Run migrations manually (inside container or venv)
 
@@ -175,6 +179,12 @@ as often as you like.
 | `/api/v1/auth/token/refresh`   | POST   | None  | Rotate JWT refresh token           |
 | `/api/v1/auth/logout`          | POST   | JWT   | Revoke the presented refresh token |
 | `/api/v1/auth/password/change` | POST   | JWT   | Set your own password; clears `must_change_password` |
+
+Five wrong passwords lock an account's password login for 15 minutes (`429`).
+Codes only go to Uzbek numbers, `+998` and nine digits. A member still on a
+temporary password gets `403` everywhere except `/users/me`, `/members/me`,
+`/auth/password/change` and `/auth/logout`. The admin who issued that password
+has seen it.
 
 **Phone + OTP is the front door**; email + password is kept for admins and
 back-office, and is how an employee uses the one-time password their admin
@@ -233,7 +243,8 @@ also matches its subcategories), `is_self_propelled`, `hitch_category`,
 
 Assets are scoped to `request.auth.organization`: another org's id returns
 **404**, not 403, so ids can't be probed. All list endpoints are paginated
-(`?limit=` / `?offset=`, returning `{"items": [...], "count": N}`).
+(`?limit=` / `?offset=`, returning `{"items": [...], "count": N}`). `limit` tops
+out at 100; above that is a `422`.
 
 ### Members — the caller's organization's staff
 
@@ -342,12 +353,13 @@ an order and a contract work.
 | `/api/v1/billing/payments/{id}/mock-complete`, `/payouts/{id}/mock-complete` | POST | `billing.manage` | **Development only.** Stand in for the provider, and 404 in production |
 
 There is no real payment provider yet. `billing/gateway.py` is the seam, as
-`api/sms.py` is for SMS. `MockGateway` is refused when `ENVIRONMENT=production`,
-because it can declare that money arrived: payment endpoints answer 503 there
-until a real provider is added.
+`api/sms.py` is for SMS. `MockGateway` can declare that money arrived, so it is
+off unless `BILLING_MOCK_ENABLED=true`, and never runs when
+`ENVIRONMENT=production`. Without it, payment endpoints answer 503.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `BILLING_MOCK_ENABLED` | off | Turns the mock provider on. Development only |
 | `BILLING_COMMISSION_RATE` | `0.015` | Charged to the seller on one-time orders. **Placeholder** |
 | `BILLING_CONTRACT_COMMISSION_RATE` | `0.01` | The same for contract deliveries. **Placeholder** |
 | `BILLING_PAYOUT_COOLDOWN_HOURS` | `24` | How long a new payout account waits |
@@ -393,8 +405,10 @@ from Django's own `auth.Permission` machinery, which stays for the admin site.
 | `contracts.manage` | Proposing, signing, amending and ending contracts |
 | `billing.manage`   | Paying, top-ups, payout accounts, withdrawals |
 
-- **Reads are open** to any member of the organization; a permission only ever
-  gates a write.
+- **`*.view` codes gate reading** an organization's private data, and a
+  `*.manage` code implies the `*.view` of its area.
+- **Nobody hands out more than they hold.** A member can't grant a code they
+  lack, and can't reset the password or change the phone of someone holding one.
 - **The owner implicitly holds every code** (`User.has_org_perm`) and is never
   stored with permissions, so an organization can't lock itself out. The owner
   reads back the full set from `org_permissions`.

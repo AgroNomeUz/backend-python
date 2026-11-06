@@ -3,6 +3,7 @@ import tempfile
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -12,6 +13,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import ActivityLog
+from equipment.schemas import AssetUpdateIn
+from equipment.views import _apply_update_asset, org_assets
 from inquiries.models import Inquiry
 from listings.models import Listing, ListingImage
 from users.models import Organization, Region, User
@@ -394,6 +397,22 @@ class AssetWriteTests(TestCase):
         token = create_access_token(self.owner.public_id)
         return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
 
+    def test_two_edits_do_not_undo_each_other(self):
+        asset = Asset.objects.create(
+            organization=self.org, equipment_model=self.equipment_model
+        )
+        stale = org_assets(self.org).get(pk=asset.pk)
+        Asset.objects.filter(pk=asset.pk).update(
+            operational_status=Asset.OperationalStatus.RETIRED
+        )
+
+        request = SimpleNamespace(auth=self.owner, META={}, method="PATCH", path="/")
+        _apply_update_asset(request, self.org, stale, AssetUpdateIn(notes="Serviced"))
+
+        asset.refresh_from_db()
+        self.assertEqual(asset.operational_status, Asset.OperationalStatus.RETIRED)
+        self.assertEqual(asset.notes, "Serviced")
+
     def test_create_asset_returns_201_and_audits(self):
         """
         Also guards `equipment_model_or_404`, which stays sync because it runs
@@ -533,6 +552,14 @@ class AssetWriteTests(TestCase):
         self.assertEqual(response.status_code, 404)
         foreign.refresh_from_db()
         self.assertEqual(foreign.serial_number, "")
+
+
+class SeedDemoProductionTests(TestCase):
+    @override_settings(ENVIRONMENT="production")
+    def test_demo_accounts_are_refused_in_production(self):
+        with self.assertRaises(CommandError):
+            call_command("seed_demo", stdout=StringIO())
+        self.assertFalse(User.objects.exists())
 
 
 class SeedDemoTests(TestCase):

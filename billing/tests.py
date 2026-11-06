@@ -8,17 +8,21 @@ replay and race things and then look at the balances. Every test ends by asking
 """
 
 import json
+import os
+import runpy
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings as django_settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError, connection, transaction
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from api.auth import create_access_token
+from core.test_support import auth
 from billing import gateway as gateways
 from billing import services
 from billing.models import (
@@ -36,10 +40,6 @@ from core.models import ActivityLog
 from users.models import OrgPermission, Organization, Region, User
 
 PHONE = "+998901112233"
-
-
-def auth(user: User) -> dict:
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 def make_org(slug: str, region: Region, phone: str | None = None) -> tuple[Organization, User]:
@@ -71,6 +71,7 @@ def send_event(event_type, reference, amount, event_id=None, reason=""):
     return services.process_event("mock", event)
 
 
+@override_settings(BILLING_MOCK_ENABLED=True)
 class BillingTestCase(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -153,7 +154,7 @@ class LedgerInvariantTests(BillingTestCase):
         deposit(self.buyer, "100.00")
         with self.assertRaises(DatabaseError):
             with transaction.atomic():
-                LedgerTransaction.objects.update(memo="edited")
+                LedgerTransaction.objects.update(kind="edited")
 
     def test_the_same_idempotency_key_posts_once(self):
         wallet = services.wallet_for(self.buyer)
@@ -440,6 +441,32 @@ class MockRefusedInProductionTests(BillingTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class MockOffByDefaultTests(SimpleTestCase):
+    """Reads the real settings file: a test override could not catch this."""
+
+    def settings_with(self, **env):
+        clean = {"SECRET_KEY": "x", **env}
+        with mock.patch.dict(os.environ, clean):
+            for name in ("BILLING_MOCK_ENABLED", "ENVIRONMENT"):
+                if name not in env:
+                    os.environ.pop(name, None)
+            return runpy.run_path(str(django_settings.BASE_DIR / "agro/settings.py"))
+
+    def test_off_when_nobody_asked_for_it(self):
+        self.assertFalse(self.settings_with()["BILLING_MOCK_ENABLED"])
+
+    def test_on_only_when_asked_for(self):
+        self.assertTrue(self.settings_with(BILLING_MOCK_ENABLED="true")["BILLING_MOCK_ENABLED"])
+
+    def test_never_in_production(self):
+        loaded = self.settings_with(BILLING_MOCK_ENABLED="true", ENVIRONMENT="production")
+        self.assertFalse(loaded["BILLING_MOCK_ENABLED"])
+
+    def test_a_commission_rate_above_one_stops_the_process(self):
+        with self.assertRaises(ImproperlyConfigured):
+            self.settings_with(BILLING_COMMISSION_RATE="1.5")
+
+
 class WalletApiTests(BillingTestCase):
     def test_a_top_up_through_the_api(self):
         payment = self.post("top-ups", {"amount": "2500.50"}).json()
@@ -471,6 +498,19 @@ class WalletApiTests(BillingTestCase):
         second = self.post("top-ups", data).json()
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(Payment.objects.count(), 1)
+
+    def test_a_retry_writes_one_audit_row(self):
+        data = {"amount": "100.00", "idempotency_key": "double-tap"}
+        self.post("top-ups", data)
+        self.post("top-ups", data)
+        self.assertEqual(ActivityLog.objects.filter(organization=self.buyer).count(), 1)
+
+    def test_no_payment_exists_without_its_audit_row(self):
+        self.client.raise_request_exception = False
+        with mock.patch("billing.views.log_activity", side_effect=RuntimeError("boom")):
+            response = self.post("top-ups", {"amount": "100.00"})
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(Payment.objects.exists())
 
     def test_a_reused_key_with_another_amount_is_refused(self):
         self.post("top-ups", {"amount": "100.00", "idempotency_key": "k"})
@@ -627,6 +667,16 @@ class PayoutTests(BillingTestCase):
         self.assertEqual(done.json()["status"], "paid")
         self.assertEqual(services.wallet_balance(self.buyer), Decimal("600.00"))
 
+    def test_a_retried_payout_writes_one_audit_row(self):
+        deposit(self.buyer, "1000.00")
+        destination = self.ready_destination()
+        self.payout(destination, idempotency_key="once")
+        self.payout(destination, idempotency_key="once")
+        rows = ActivityLog.objects.filter(
+            organization=self.buyer, content_type__model="payout"
+        )
+        self.assertEqual(rows.count(), 1)
+
     def test_a_payout_cannot_exceed_the_wallet(self):
         deposit(self.buyer, "100.00")
         response = self.payout(self.ready_destination())
@@ -668,6 +718,7 @@ class PayoutTests(BillingTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+@override_settings(BILLING_MOCK_ENABLED=True)
 class ConcurrencyTests(TransactionTestCase):
     """Real transactions and real threads: the locks are what is under test."""
 

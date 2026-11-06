@@ -32,6 +32,13 @@ def caller_organization(request) -> Organization:
     return user.organization
 
 
+def writable_organization(request, code: str) -> Organization:
+    """The caller's organization, for a write that needs the `*.manage` `code`."""
+    organization = caller_organization(request)
+    require_perm(request, code)
+    return organization
+
+
 def readable_organization(request, code: str) -> Organization:
     """The caller's organization, for a read that needs the `*.view` `code`."""
     organization = caller_organization(request)

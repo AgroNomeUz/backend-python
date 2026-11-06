@@ -118,7 +118,6 @@ def _post(
     hold: EscrowHold | None = None,
     payment: Payment | None = None,
     payout: Payout | None = None,
-    memo: str = "",
 ) -> LedgerTransaction:
     """
     Write one balanced transaction, or return the one this key already made.
@@ -143,7 +142,6 @@ def _post(
                 hold=hold,
                 payment=payment,
                 payout=payout,
-                memo=memo,
             )
             LedgerEntry.objects.bulk_create(
                 LedgerEntry(transaction=ledger_transaction, account=account, amount=amount)
@@ -291,13 +289,16 @@ def start_payment(
     reference_type: str = "",
     reference_id=None,
     idempotency_key: str = "",
+    on_created=None,
 ) -> Payment:
     """
     Open a checkout with the provider.
 
     Called outside any transaction on purpose: a network call must not hold row
     locks. If the provider call fails the row is marked failed, so nothing is
-    left pending and the buyer can simply try again.
+    left pending and the buyer can simply try again. `on_created` runs in the
+    transaction that creates the row, and not at all on a replay: it is where a
+    caller writes its audit row.
     """
     amount = money(amount)
     if amount <= 0:
@@ -328,6 +329,8 @@ def start_payment(
                 reference_id=reference_id,
                 idempotency_key=idempotency_key,
             )
+            if on_created:
+                on_created(payment)
     except IntegrityError:
         # A concurrent duplicate won one of the two unique constraints.
         existing = _open_duplicate(organization, reference_type, reference_id, idempotency_key)
@@ -432,6 +435,7 @@ def add_destination(
     label: str,
     holder_name: str,
     account_number: str,
+    on_created=None,
 ) -> PayoutDestination:
     try:
         token = gateways.get_gateway().tokenize_destination(kind, account_number)
@@ -439,17 +443,21 @@ def add_destination(
         raise BillingError(str(exc), status=503)
     except gateways.GatewayError:
         raise BillingError("The payment provider refused that account", status=502)
-    return PayoutDestination.objects.create(
-        organization=organization,
-        created_by=user,
-        kind=kind,
-        label=label,
-        holder_name=holder_name,
-        last4=account_number[-4:],
-        provider_token=token,
-        usable_from=timezone.now()
-        + timedelta(hours=settings.BILLING_PAYOUT_COOLDOWN_HOURS),
-    )
+    with transaction.atomic():
+        destination = PayoutDestination.objects.create(
+            organization=organization,
+            created_by=user,
+            kind=kind,
+            label=label,
+            holder_name=holder_name,
+            last4=account_number[-4:],
+            provider_token=token,
+            usable_from=timezone.now()
+            + timedelta(hours=settings.BILLING_PAYOUT_COOLDOWN_HOURS),
+        )
+        if on_created:
+            on_created(destination)
+    return destination
 
 
 def request_payout(
@@ -459,6 +467,7 @@ def request_payout(
     amount: Decimal,
     user=None,
     idempotency_key: str = "",
+    on_created=None,
 ) -> Payout:
     """
     Take the money out of the wallet, then ask the provider to send it.
@@ -511,6 +520,8 @@ def request_payout(
             f"payout:{payout.pk}",
             payout=payout,
         )
+        if on_created:
+            on_created(payout)
 
     try:
         payout.provider_reference = gateway.send_payout(payout)

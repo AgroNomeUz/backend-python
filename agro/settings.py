@@ -107,6 +107,10 @@ PUBLIC_MEDIA_DIRS = ["listings", "offers"]
 LISTING_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 LISTING_IMAGE_MAX_COUNT = 10
 
+# django-ninja's default is no limit at all, so one public request could ask
+# for a whole table.
+NINJA_PAGINATION_MAX_LIMIT = 100
+
 # Only the public marketing site needs cross-origin access — everything else
 # (the app frontend, mobile clients) talks to the API same-origin or via a
 # bearer token, which CORS doesn't gate anyway.
@@ -247,6 +251,10 @@ OTP_MAX_REQUESTS_PER_IP_PER_HOUR = 30
 # Proof-of-phone-ownership handed to /auth/org/signup. Short, single-use.
 SIGNUP_TOKEN_TTL_SECONDS = 15 * 60
 
+# Wrong passwords allowed per account before /auth/login answers 429.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+
 # Escape hatches for developing without an SMS gateway. Both are refused
 # when ENVIRONMENT is 'production' — here *and* again at the point of use in
 # api/sms.py, because a leaked passcode is a live credential: whoever reads
@@ -279,8 +287,12 @@ BILLING_CURRENCY = "UZS"
 # one so far is the mock.
 BILLING_GATEWAY = os.environ.get("BILLING_GATEWAY", "mock")
 # The mock lets a caller declare a payment succeeded, which is minting money.
-# Never available in production, whatever the environment says otherwise.
-BILLING_MOCK_ENABLED = ENVIRONMENT != "production"
+# Off unless explicitly asked for, so a server with ENVIRONMENT unset cannot
+# mint money either, and never available in production.
+BILLING_MOCK_ENABLED = (
+    os.environ.get("BILLING_MOCK_ENABLED", "").lower() == "true"
+    and ENVIRONMENT != "production"
+)
 # Placeholders until provider fees are known — see docs/produce-marketplace.md.
 # Charged to the seller on the value released to them.
 BILLING_COMMISSION_RATE = Decimal(os.environ.get("BILLING_COMMISSION_RATE", "0.015"))

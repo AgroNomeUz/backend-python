@@ -8,6 +8,8 @@ services:
       - "8081:8080"
     env_file:
       - .env
+    environment:
+      BILLING_MOCK_ENABLED: "true"
     depends_on:
         - db
     volumes:

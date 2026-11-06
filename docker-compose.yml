@@ -3,11 +3,17 @@ version: '5.0.2'
 services:
   web:
     build: .
-    command: python /code/manage.py runserver 0.0.0.0:8080
+    command: uvicorn agro.asgi:application --host 0.0.0.0 --port 8080 --workers 4
     ports:
       - "8081:8080"
     env_file:
       - .env
+    environment:
+      # Django's rule for ASGI: persistent connections are per event loop task
+      # and leak, so they stay off here whatever .env says.
+      CONN_MAX_AGE: "0"
+    volumes:
+      - media_data:/code/media
     depends_on:
         - db
   db:
@@ -21,3 +27,4 @@ services:
 
 volumes:
     postgres_data:
+    media_data:

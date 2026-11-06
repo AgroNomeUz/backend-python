@@ -17,17 +17,12 @@ from datetime import date
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from inquiries.models import Inquiry, InquiryMessage
 from listings.models import Listing
 from users.models import OrgPermission, Organization, Region, User
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class InquiryTestCase(TestCase):

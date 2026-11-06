@@ -20,10 +20,14 @@ from ninja.pagination import LimitOffsetPagination, paginate
 from core.audit import log_activity
 from core.models import ActivityLog
 from users.models import OrgPermission, Organization
-from users.permissions import readable_organization
+from users.permissions import readable_organization, writable_organization
 
 from .models import PurchaseRequest, Quote, Side, market_today
-from .offer_api import active_product_or_400, region_or_400, writable_organization
+from .offer_api import (
+    active_product_or_400,
+    region_or_400,
+    require_may_sell,
+)
 from .order_api import order_detail
 from .order_services import Actor, close_request, order_from_quote
 from .schemas import (
@@ -157,7 +161,7 @@ def _apply_create_request(request, organization, data: PurchaseRequestCreateIn):
 @requests_router.post("", response={201: PurchaseRequestOut})
 async def create_request(request, data: PurchaseRequestCreateIn):
     """Say what you need. Set `is_recurring` for regular supply."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return 201, await sync_to_async(_apply_create_request)(request, organization, data)
 
 
@@ -193,7 +197,7 @@ def _apply_close_request(request, organization, request_id: UUID):
 @requests_router.post("/{request_id}/close", response=PurchaseRequestOut)
 async def close_purchase_request(request, request_id: UUID):
     """Stop taking quotes. Any still waiting are rejected."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return await sync_to_async(_apply_close_request)(request, organization, request_id)
 
 
@@ -202,6 +206,7 @@ async def close_purchase_request(request, request_id: UUID):
 def _apply_create_quote(request, organization, purchase_request, data: QuoteCreateIn):
     if purchase_request.customer_organization_id == organization.pk:
         raise HttpError(400, "You cannot quote on your own request.")
+    require_may_sell(purchase_request.product, organization)
     if data.valid_until < market_today():
         raise HttpError(400, "valid_until has passed")
     try:
@@ -228,7 +233,7 @@ def _apply_create_quote(request, organization, purchase_request, data: QuoteCrea
 
 @requests_router.post("/{request_id}/quotes", response={201: QuoteOut})
 async def create_quote(request, request_id: UUID, data: QuoteCreateIn):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     purchase_request = await aget_object_or_404(open_requests(), public_id=request_id)
     return 201, await sync_to_async(_apply_create_quote)(
         request, organization, purchase_request, data
@@ -278,7 +283,7 @@ def _apply_accept_quote(request, organization, quote: Quote, data: QuoteAcceptIn
 @quotes_router.post("/{quote_id}/accept", response={201: OrderDetailOut})
 async def accept_quote(request, quote_id: UUID, data: QuoteAcceptIn):
     """Take a one-time quote: this creates an order waiting for payment."""
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     quote = await aget_object_or_404(_received_quotes(organization), public_id=quote_id)
     return 201, await sync_to_async(_apply_accept_quote)(request, organization, quote, data)
 
@@ -302,7 +307,7 @@ def _apply_close_quote(request, organization, queryset, quote_id, to_status) -> 
 
 @quotes_router.post("/{quote_id}/reject", response=QuoteOut)
 async def reject_quote(request, quote_id: UUID):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return await sync_to_async(_apply_close_quote)(
         request,
         organization,
@@ -314,7 +319,7 @@ async def reject_quote(request, quote_id: UUID):
 
 @quotes_router.post("/{quote_id}/withdraw", response=QuoteOut)
 async def withdraw_quote(request, quote_id: UUID):
-    organization = writable_organization(request)
+    organization = writable_organization(request, OrgPermission.MANAGE_MARKET)
     return await sync_to_async(_apply_close_quote)(
         request,
         organization,

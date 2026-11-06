@@ -14,15 +14,11 @@ from importlib import import_module
 from django.apps import apps
 from django.test import TestCase
 
-from api.auth import create_access_token
+from core.test_support import auth
 from users.models import VIEW_PERMISSIONS, OrgPermission, Organization, User
 
 P = OrgPermission
 MISSING = uuid.uuid4()
-
-
-def auth(user: User) -> dict:
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 # area view code -> GETs on private data in that area

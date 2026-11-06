@@ -14,15 +14,19 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, connection, transaction
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 
 from api.auth import create_access_token
+from core.test_support import auth
 from core.models import ActivityLog
 from equipment.models import Asset, EquipmentCategory, EquipmentModel, Manufacturer
 from listings.models import Listing, ListingImage, ListingView
+from listings.schemas import ListingUpdateIn
+from listings.views import _apply_update_listing, org_listings
 from users.models import OrgPermission, Organization, Region, User
 
 # A real, minimal PNG — the upload endpoint sniffs the leading bytes, so a
@@ -32,11 +36,6 @@ PNG_BYTES = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
-
-
-def auth(user: User) -> dict:
-    """Request kwargs carrying a bearer token for `user`."""
-    return {"HTTP_AUTHORIZATION": f"Bearer {create_access_token(user.public_id)}"}
 
 
 class ListingTestCase(TestCase):
@@ -488,6 +487,18 @@ class ListingWriteTests(ListingTestCase):
     The org-side CRUD: permission gates, org scoping, and an audit row per
     write (§0.3 — a write endpoint without one is incomplete).
     """
+
+    def test_an_edit_cannot_undo_a_sale_confirmed_meanwhile(self):
+        listing = self.make_listing()
+        stale = org_listings(self.org).get(pk=listing.pk)
+        Listing.objects.filter(pk=listing.pk).update(status=Listing.Status.SOLD)
+
+        request = SimpleNamespace(auth=self.owner, META={}, method="PATCH", path="/")
+        _apply_update_listing(request, self.org, stale, ListingUpdateIn(title="Renamed"))
+
+        listing.refresh_from_db()
+        self.assertEqual(listing.status, Listing.Status.SOLD)
+        self.assertEqual(listing.title, "Renamed")
 
     def post_listing(self, user=None, **overrides):
         body = {

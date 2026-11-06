@@ -7,6 +7,8 @@ deriving a unique `username` for an account nobody chose a username for, and
 generating a one-time password that is safe to read aloud over the phone.
 """
 
+import re
+
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 
@@ -35,6 +37,11 @@ def normalize_phone(value: str | None) -> str | None:
         return None
     cleaned = "".join(char for char in value if char.isdigit() or char == "+")
     return cleaned or None
+
+
+def is_uzbek_phone(phone: str) -> bool:
+    """Every SMS costs money, so only numbers we could really be texting get one."""
+    return re.fullmatch(r"\+998\d{9}", phone) is not None
 
 
 def _free_username(base: str) -> str:
