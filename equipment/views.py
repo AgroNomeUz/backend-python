@@ -350,33 +350,32 @@ def _apply_update_asset(request, organization, asset: Asset, data: AssetUpdateIn
     if nulled:
         raise HttpError(400, f"These fields cannot be null: {', '.join(nulled)}")
 
-    Asset.objects.select_for_update().get(pk=asset.pk)
-    asset = org_assets(organization).get(pk=asset.pk)
-    before = asset_snapshot(asset)
-
-    if "equipment_model_id" in fields:
-        asset.equipment_model = equipment_model_or_404(fields.pop("equipment_model_id"))
-    if "location" in fields:
-        fields.pop("location")
-        asset.current_location = _point(data.location)
-    for name, value in fields.items():
-        setattr(asset, name, value)
-
-    changes = diff(before, asset_snapshot(asset))
-    if not changes:
-        return asset
-
-    action = (
-        ActivityLog.Action.STATUS_CHANGED
-        if set(changes) == {"operational_status"}
-        else ActivityLog.Action.UPDATED
-    )
-
     with transaction.atomic():
+        Asset.objects.select_for_update().get(pk=asset.pk)
+        asset = org_assets(organization).get(pk=asset.pk)
+        before = asset_snapshot(asset)
+
+        if "equipment_model_id" in fields:
+            asset.equipment_model = equipment_model_or_404(fields.pop("equipment_model_id"))
+        if "location" in fields:
+            fields.pop("location")
+            asset.current_location = _point(data.location)
+        for name, value in fields.items():
+            setattr(asset, name, value)
+
+        changes = diff(before, asset_snapshot(asset))
+        if not changes:
+            return asset
+
+        action = (
+            ActivityLog.Action.STATUS_CHANGED
+            if set(changes) == {"operational_status"}
+            else ActivityLog.Action.UPDATED
+        )
+
         asset.save()
         log_activity(request, organization, action, asset, changes=changes)
-
-    return asset
+        return asset
 
 
 @assets_router.patch("/{asset_id}", response=AssetOut)

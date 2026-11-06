@@ -237,36 +237,40 @@ async def get_field(request, field_id: UUID):
 
 
 def _apply_update_field(request, organization, field: Field, data: FieldUpdateIn) -> Field:
-    fields = data.dict(exclude_unset=True)
-    _require_not_null(fields, "name", "soato", "soil_type", "notes")
-    if not fields:
-        return field
+    # Waits for the row and reads it again, so two members' edits cannot undo each other.
+    with transaction.atomic():
+        Field.objects.select_for_update().get(pk=field.pk)
+        field = org_fields(organization).get(pk=field.pk)
+        fields = data.dict(exclude_unset=True)
+        _require_not_null(fields, "name", "soato", "soil_type", "notes")
+        if not fields:
+            return field
 
-    before = field_snapshot(field)
-    if "area" in fields:
-        area = data.area
-        field.area = area.value if area else None
-        if area:
-            field.area_unit = area.unit
-        fields.pop("area")
-    for name, value in fields.items():
-        setattr(field, name, value)
+        before = field_snapshot(field)
+        if "area" in fields:
+            area = data.area
+            field.area = area.value if area else None
+            if area:
+                field.area_unit = area.unit
+            fields.pop("area")
+        for name, value in fields.items():
+            setattr(field, name, value)
 
-    changes = diff(before, field_snapshot(field))
-    if not changes:
-        return field
+        changes = diff(before, field_snapshot(field))
+        if not changes:
+            return field
 
-    try:
-        with transaction.atomic():
-            field.save()
-            log_activity(
-                request, organization, ActivityLog.Action.UPDATED, field, changes=changes
-            )
-    except IntegrityError as exc:
-        raise integrity_error(exc, FIELD_CONFLICTS)
+        try:
+            with transaction.atomic():
+                field.save()
+                log_activity(
+                    request, organization, ActivityLog.Action.UPDATED, field, changes=changes
+                )
+        except IntegrityError as exc:
+            raise integrity_error(exc, FIELD_CONFLICTS)
 
-    # Re-read: the response shows the stored (quantized) area.
-    return _field_or_404(organization, field.public_id)
+        # Re-read: the response shows the stored (quantized) area.
+        return _field_or_404(organization, field.public_id)
 
 
 @fields_router.patch("/{field_id}", response=FieldOut)
@@ -560,62 +564,66 @@ async def get_crop_zone(request, zone_id: UUID):
 def _apply_update_crop_zone(
     request, organization, zone: CropZone, data: CropZoneUpdateIn
 ) -> CropZone:
-    fields = data.dict(exclude_unset=True)
-    _require_not_null(
-        fields, "field_id", "season_id", "crop_code", "crop_name", "notes"
-    )
-    if not fields:
-        return zone
+    # Waits for the row and reads it again, so two members' edits cannot undo each other.
+    with transaction.atomic():
+        CropZone.objects.select_for_update().get(pk=zone.pk)
+        zone = org_crop_zones(organization).get(pk=zone.pk)
+        fields = data.dict(exclude_unset=True)
+        _require_not_null(
+            fields, "field_id", "season_id", "crop_code", "crop_name", "notes"
+        )
+        if not fields:
+            return zone
 
-    before = crop_zone_snapshot(zone)
+        before = crop_zone_snapshot(zone)
 
-    field_changed = "field_id" in fields
-    if field_changed:
-        zone.field = _own_field(organization, fields.pop("field_id"))
-    if "season_id" in fields:
-        zone.season = _own_season(organization, fields.pop("season_id"))
-    geometry_changed = "geometry" in fields
-    if geometry_changed:
-        fields.pop("geometry")
-        zone.geometry = geometry_from_geojson(data.geometry)
-    if "area" in fields:
-        fields.pop("area")
-        if zone.geometry is not None:
-            raise HttpError(
-                400,
-                "area is computed from the geometry; clear the geometry to set it by hand.",
-            )
-        zone.area = data.area.value if data.area else None
-        if data.area:
-            zone.area_unit = data.area.unit
-    if zone.geometry is not None and (geometry_changed or field_changed):
-        # Re-checked when the field moves too: the old shape has to fit the
-        # new field.
-        _check_inside_field(zone.field, zone.geometry)
-    if zone.geometry is not None and geometry_changed:
-        zone.area = _computed_area(zone.geometry)
-        zone.area_unit = HECTARE
-    if "crop_code" in fields:
-        fields["crop_code"] = _crop_code(fields["crop_code"])
-    for name, value in fields.items():
-        setattr(zone, name, value)
+        field_changed = "field_id" in fields
+        if field_changed:
+            zone.field = _own_field(organization, fields.pop("field_id"))
+        if "season_id" in fields:
+            zone.season = _own_season(organization, fields.pop("season_id"))
+        geometry_changed = "geometry" in fields
+        if geometry_changed:
+            fields.pop("geometry")
+            zone.geometry = geometry_from_geojson(data.geometry)
+        if "area" in fields:
+            fields.pop("area")
+            if zone.geometry is not None:
+                raise HttpError(
+                    400,
+                    "area is computed from the geometry; clear the geometry to set it by hand.",
+                )
+            zone.area = data.area.value if data.area else None
+            if data.area:
+                zone.area_unit = data.area.unit
+        if zone.geometry is not None and (geometry_changed or field_changed):
+            # Re-checked when the field moves too: the old shape has to fit the
+            # new field.
+            _check_inside_field(zone.field, zone.geometry)
+        if zone.geometry is not None and geometry_changed:
+            zone.area = _computed_area(zone.geometry)
+            zone.area_unit = HECTARE
+        if "crop_code" in fields:
+            fields["crop_code"] = _crop_code(fields["crop_code"])
+        for name, value in fields.items():
+            setattr(zone, name, value)
 
-    _check_harvest_dates(zone.planting_date, zone.expected_harvest_date)
+        _check_harvest_dates(zone.planting_date, zone.expected_harvest_date)
 
-    changes = diff(before, crop_zone_snapshot(zone))
-    if not changes:
-        return zone
+        changes = diff(before, crop_zone_snapshot(zone))
+        if not changes:
+            return zone
 
-    try:
-        with transaction.atomic():
-            zone.save()
-            log_activity(
-                request, organization, ActivityLog.Action.UPDATED, zone, changes=changes
-            )
-    except IntegrityError as exc:
-        raise integrity_error(exc, CROP_ZONE_CONFLICTS)
+        try:
+            with transaction.atomic():
+                zone.save()
+                log_activity(
+                    request, organization, ActivityLog.Action.UPDATED, zone, changes=changes
+                )
+        except IntegrityError as exc:
+            raise integrity_error(exc, CROP_ZONE_CONFLICTS)
 
-    return org_crop_zones(organization).get(pk=zone.pk)
+        return org_crop_zones(organization).get(pk=zone.pk)
 
 
 @crop_zones_router.patch("/{zone_id}", response=CropZoneOut)

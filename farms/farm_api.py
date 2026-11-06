@@ -113,31 +113,35 @@ async def get_cluster(request, cluster_id: UUID):
 
 
 def _apply_update_cluster(request, organization, cluster, data: ClusterUpdateIn):
-    if "name" in data.model_fields_set and data.name is None:
-        raise HttpError(400, "name cannot be null")
-    fields = {
-        name: value
-        for name, value in data.dict(exclude_unset=True).items()
-        if value is not None
-    }
-    if "name" in fields:
-        fields["name"] = fields["name"].strip()
-    before = snapshot(cluster, CLUSTER_AUDIT_FIELDS)
-    for name, value in fields.items():
-        setattr(cluster, name, value)
-    changes = diff(before, snapshot(cluster, CLUSTER_AUDIT_FIELDS))
-    if not changes:
-        return cluster
+    # Waits for the row and reads it again, so two members' edits cannot undo each other.
+    with transaction.atomic():
+        FarmCluster.objects.select_for_update().get(pk=cluster.pk)
+        cluster = org_clusters(organization).get(pk=cluster.pk)
+        if "name" in data.model_fields_set and data.name is None:
+            raise HttpError(400, "name cannot be null")
+        fields = {
+            name: value
+            for name, value in data.dict(exclude_unset=True).items()
+            if value is not None
+        }
+        if "name" in fields:
+            fields["name"] = fields["name"].strip()
+        before = snapshot(cluster, CLUSTER_AUDIT_FIELDS)
+        for name, value in fields.items():
+            setattr(cluster, name, value)
+        changes = diff(before, snapshot(cluster, CLUSTER_AUDIT_FIELDS))
+        if not changes:
+            return cluster
 
-    try:
-        with transaction.atomic():
-            cluster.save()
-            log_activity(
-                request, organization, ActivityLog.Action.UPDATED, cluster, changes=changes
-            )
-    except IntegrityError as error:
-        raise _integrity_error(error, "A cluster with this name already exists")
-    return org_clusters(organization).get(pk=cluster.pk)
+        try:
+            with transaction.atomic():
+                cluster.save()
+                log_activity(
+                    request, organization, ActivityLog.Action.UPDATED, cluster, changes=changes
+                )
+        except IntegrityError as error:
+            raise _integrity_error(error, "A cluster with this name already exists")
+        return org_clusters(organization).get(pk=cluster.pk)
 
 
 @clusters_router.patch("/{cluster_id}", response=ClusterOut)
@@ -330,42 +334,46 @@ async def get_farm(request, farm_id: UUID):
 
 
 def _apply_update_farm(request, organization, farm: Farm, data: FarmUpdateIn) -> Farm:
-    fields = data.dict(exclude_unset=True)
-    if "name" in fields and fields["name"] is None:
-        raise HttpError(400, "name cannot be null")
-    # address/notes cannot be nulled; for them null means "not sent".
-    for name in ("address", "notes"):
-        if name in fields and fields[name] is None:
-            del fields[name]
-    if not fields:
-        return farm
+    # Waits for the row and reads it again, so two members' edits cannot undo each other.
+    with transaction.atomic():
+        Farm.objects.select_for_update().get(pk=farm.pk)
+        farm = org_farms(organization).get(pk=farm.pk)
+        fields = data.dict(exclude_unset=True)
+        if "name" in fields and fields["name"] is None:
+            raise HttpError(400, "name cannot be null")
+        # address/notes cannot be nulled; for them null means "not sent".
+        for name in ("address", "notes"):
+            if name in fields and fields[name] is None:
+                del fields[name]
+        if not fields:
+            return farm
 
-    before = farm_snapshot(farm)
+        before = farm_snapshot(farm)
 
-    if "cluster_id" in fields:
-        farm.cluster = _resolve_cluster(organization, fields.pop("cluster_id"))
-    if "region_id" in fields:
-        farm.region = _resolve_region(fields.pop("region_id"))
-    if "location" in fields:
-        farm.location = _point(fields.pop("location"))
-    if "name" in fields:
-        fields["name"] = fields["name"].strip()
-    for name, value in fields.items():
-        setattr(farm, name, value)
+        if "cluster_id" in fields:
+            farm.cluster = _resolve_cluster(organization, fields.pop("cluster_id"))
+        if "region_id" in fields:
+            farm.region = _resolve_region(fields.pop("region_id"))
+        if "location" in fields:
+            farm.location = _point(fields.pop("location"))
+        if "name" in fields:
+            fields["name"] = fields["name"].strip()
+        for name, value in fields.items():
+            setattr(farm, name, value)
 
-    changes = diff(before, farm_snapshot(farm))
-    if not changes:
-        return farm
+        changes = diff(before, farm_snapshot(farm))
+        if not changes:
+            return farm
 
-    try:
-        with transaction.atomic():
-            farm.save()
-            log_activity(
-                request, organization, ActivityLog.Action.UPDATED, farm, changes=changes
-            )
-    except IntegrityError as error:
-        raise _integrity_error(error, "A farm with this name already exists")
-    return org_farms(organization).get(pk=farm.pk)
+        try:
+            with transaction.atomic():
+                farm.save()
+                log_activity(
+                    request, organization, ActivityLog.Action.UPDATED, farm, changes=changes
+                )
+        except IntegrityError as error:
+            raise _integrity_error(error, "A farm with this name already exists")
+        return org_farms(organization).get(pk=farm.pk)
 
 
 @farms_router.patch("/{farm_id}", response=FarmOut)
@@ -482,30 +490,34 @@ async def get_season(request, season_id: UUID):
 
 
 def _apply_update_season(request, organization, season, data: SeasonUpdateIn):
-    fields = {
-        name: value
-        for name, value in data.dict(exclude_unset=True).items()
-        if value is not None
-    }
-    if "name" in fields:
-        fields["name"] = fields["name"].strip()
-    before = snapshot(season, SEASON_AUDIT_FIELDS)
-    for name, value in fields.items():
-        setattr(season, name, value)
-    changes = diff(before, snapshot(season, SEASON_AUDIT_FIELDS))
-    if not changes:
-        return season
-    _check_season_dates(season.start_date, season.end_date)
+    # Waits for the row and reads it again, so two members' edits cannot undo each other.
+    with transaction.atomic():
+        Season.objects.select_for_update().get(pk=season.pk)
+        season = org_seasons(organization).get(pk=season.pk)
+        fields = {
+            name: value
+            for name, value in data.dict(exclude_unset=True).items()
+            if value is not None
+        }
+        if "name" in fields:
+            fields["name"] = fields["name"].strip()
+        before = snapshot(season, SEASON_AUDIT_FIELDS)
+        for name, value in fields.items():
+            setattr(season, name, value)
+        changes = diff(before, snapshot(season, SEASON_AUDIT_FIELDS))
+        if not changes:
+            return season
+        _check_season_dates(season.start_date, season.end_date)
 
-    try:
-        with transaction.atomic():
-            season.save()
-            log_activity(
-                request, organization, ActivityLog.Action.UPDATED, season, changes=changes
-            )
-    except IntegrityError as error:
-        raise _integrity_error(error, "A season with this name already exists")
-    return org_seasons(organization).get(pk=season.pk)
+        try:
+            with transaction.atomic():
+                season.save()
+                log_activity(
+                    request, organization, ActivityLog.Action.UPDATED, season, changes=changes
+                )
+        except IntegrityError as error:
+            raise _integrity_error(error, "A season with this name already exists")
+        return org_seasons(organization).get(pk=season.pk)
 
 
 @seasons_router.patch("/{season_id}", response=SeasonOut)

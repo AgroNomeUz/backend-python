@@ -163,6 +163,22 @@ class ClusterApiTests(FarmApiCase):
 class FarmApiTests(FarmApiCase):
     base = "farms"
 
+    def test_update_works_on_the_current_row_not_a_stale_copy(self):
+        from types import SimpleNamespace
+
+        from .farm_api import _apply_update_farm, org_farms
+        from .farm_schemas import FarmUpdateIn
+
+        farm = self.make_farm(address="old")
+        stale = org_farms(self.a_org).get(pk=farm.pk)
+        Farm.objects.filter(pk=farm.pk).update(address="someone else")
+
+        request = SimpleNamespace(auth=self.a_manager, META={}, headers={})
+        _apply_update_farm(request, self.a_org, stale, FarmUpdateIn(notes="mine"))
+
+        farm.refresh_from_db()
+        self.assertEqual((farm.address, farm.notes), ("someone else", "mine"))
+
     def test_create_with_everything_and_read_back(self):
         cluster = FarmCluster.objects.create(organization=self.a_org, name="C")
         response = self.post(
